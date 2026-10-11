@@ -56,6 +56,7 @@ MAX_STEPS = 8
 SYSTEM_PROMPT = (
     "Ты ассистент по проекту. Файлы проекта лежат в песочнице. "
     "Чтобы узнать содержимое, используй инструменты list_files и read_file. "
+    "Чтобы написать файл, используй write_file."
     "Отвечай по-русски, кратко."
 )
 
@@ -85,7 +86,19 @@ def read_file(path: str) -> str:
     return p.read_text(encoding="utf-8")[:8000]
 
 
-FUNCS = {"list_files": list_files, "read_file": read_file}
+def write_file(path: str, content: str) -> str:
+    full = safe_path(path)
+    answer = input(
+        f"\n[?] Записать файл {path} ({len(content)} символов)? Разрешить? [y/N] ")
+    if answer.strip().lower() != "y":
+        return "Пользователь отказал в записи файла."
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(content, encoding="utf-8")
+    return f"Файл {path} записан ({len(content)} символов)."
+
+
+FUNCS = {"list_files": list_files,
+         "read_file": read_file, "write_file": write_file}
 
 TOOLS = [
     {"type": "function", "function": {
@@ -100,6 +113,14 @@ TOOLS = [
         "parameters": {"type": "object",
                        "properties": {"path": {"type": "string", "description": "Например README.md"}},
                        "required": ["path"]}}},
+    {"type": "function", "function": {
+        "name": "write_file",
+        "description": "Создать или перезаписать файл в проекте. Вызывай, когда пользователь просит что-то сохранить. Перед записью пользователь подтверждает действие.",
+        "parameters": {"type": "object",
+                       "properties": {
+                           "path": {"type": "string", "description": "Путь к файлу, например 'TODO.md'"},
+                           "content": {"type": "string", "description": "Полное содержимое файла"}},
+                       "required": ["path", "content"]}}}
 ]
 
 
