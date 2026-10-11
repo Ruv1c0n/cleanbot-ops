@@ -30,6 +30,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cleanbot.app.data.model.Schedule
 import java.util.UUID
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 
 private val dayNames = listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 
@@ -47,16 +53,18 @@ fun ScheduleTab(viewModel: RobotDetailViewModel, robotId: String) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text("Расписание уборки", style = MaterialTheme.typography.titleMedium)
-            TextButton(onClick = {
-                if (editing) {
-                    viewModel.saveSchedule(draft)
-                } else {
-                    draft = schedule
+            TextButton(
+                enabled = !editing || draft.all { timeRegex.matches(it.time) },
+                onClick = {
+                    if (editing) {
+                        viewModel.saveSchedule(draft.sortedWith(compareBy({ it.dayOfWeek }, { it.time })))
+                        editing = false
+                    } else {
+                        draft = schedule
+                        editing = true
+                    }
                 }
-                editing = !editing
-            }) {
-                Text(if (editing) "Сохранить" else "Изменить")
-            }
+            ) { Text(if (editing) "Сохранить" else "Изменить") }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -68,11 +76,15 @@ fun ScheduleTab(viewModel: RobotDetailViewModel, robotId: String) {
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(items, key = { it.id }) { entry ->
-                ScheduleRow(
-                    entry = entry,
-                    editable = editing,
-                    onDelete = { draft = draft.filterNot { it.id == entry.id } }
-                )
+                if (editing) {
+                    EditableScheduleRow(
+                        entry = entry,
+                        onChange = { upd -> draft = draft.map { if (it.id == upd.id) upd else it } },
+                        onDelete = { draft = draft.filterNot { it.id == entry.id } }
+                    )
+                } else {
+                    ScheduleRow(entry = entry, editable = false, onDelete = {})
+                }
             }
             if (editing) {
                 item {
@@ -109,6 +121,44 @@ private fun ScheduleRow(entry: Schedule, editable: Boolean, onDelete: () -> Unit
                     Icon(Icons.Filled.Delete, contentDescription = "Удалить")
                 }
             }
+        }
+    }
+}
+
+private val timeRegex = Regex("^([01]\\d|2[0-3]):[0-5]\\d$")
+
+@Composable
+private fun EditableScheduleRow(entry: Schedule, onChange: (Schedule) -> Unit, onDelete: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box {
+                OutlinedButton(onClick = { menu = true }) {
+                    Text(dayNames.getOrElse(entry.dayOfWeek - 1) { "?" })
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    dayNames.forEachIndexed { i, d ->
+                        DropdownMenuItem(text = { Text(d) }, onClick = {
+                            onChange(entry.copy(dayOfWeek = i + 1)); menu = false
+                        })
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = entry.time,
+                onValueChange = { onChange(entry.copy(time = it.take(5))) },
+                isError = !timeRegex.matches(entry.time),
+                singleLine = true,
+                modifier = Modifier.width(88.dp)
+            )
+            OutlinedButton(onClick = {
+                onChange(entry.copy(mode = if (entry.mode == "dry_sweep") "wet_mopping" else "dry_sweep"))
+            }) { Text(if (entry.mode == "dry_sweep") "Сухая" else "Влажная") }
+            IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Удалить") }
         }
     }
 }

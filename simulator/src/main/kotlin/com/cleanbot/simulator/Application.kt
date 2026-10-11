@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 import java.time.Duration
+import io.ktor.server.http.content.staticResources
 
 fun main() {
     embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
@@ -46,5 +47,6 @@ fun Application.module() {
     routing {
         robotRoutes(repository)
         telemetrySocket(repository, json)
+        staticResources("/", "web")
     }
 }

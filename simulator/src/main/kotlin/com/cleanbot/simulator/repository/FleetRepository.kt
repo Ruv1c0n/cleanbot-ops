@@ -102,8 +102,9 @@ class FleetRepository(private val scope: CoroutineScope) {
     fun getSettings(robotId: String): RobotSettings? = settings[robotId]
 
     fun updateSettings(robotId: String, newSettings: RobotSettings): Boolean {
-        if (!settings.containsKey(robotId)) return false
+        val robot = findRobot(robotId) ?: return false
         settings[robotId] = newSettings
+        robot.name = newSettings.displayName
         return true
     }
 

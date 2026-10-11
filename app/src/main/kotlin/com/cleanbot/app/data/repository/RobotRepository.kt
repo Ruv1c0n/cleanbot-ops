@@ -17,6 +17,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
+import com.cleanbot.app.data.remote.ServerConfig
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 
 enum class ConnectionState { CONNECTING, CONNECTED, DISCONNECTED }
 
@@ -59,16 +62,18 @@ class RobotRepository(
 
     fun startTelemetryLoop(scope: CoroutineScope) {
         scope.launch {
-            while (true) {
-                _connectionState.value = ConnectionState.CONNECTING
-                runCatching {
-                    socket.stream().collect { batch ->
-                        _connectionState.value = ConnectionState.CONNECTED
-                        applyTelemetry(batch)
+            ServerConfig.hostPort.collectLatest {
+                while (isActive) {
+                    _connectionState.value = ConnectionState.CONNECTING
+                    runCatching {
+                        socket.stream().collect { batch ->
+                            _connectionState.value = ConnectionState.CONNECTED
+                            applyTelemetry(batch)
+                        }
                     }
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    delay(2000)
                 }
-                _connectionState.value = ConnectionState.DISCONNECTED
-                delay(2000)
             }
         }
     }

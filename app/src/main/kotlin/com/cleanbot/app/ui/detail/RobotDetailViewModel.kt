@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.cleanbot.app.data.remote.ServerConfig
 
 class RobotDetailViewModel(
     private val robotId: String,
@@ -80,9 +81,12 @@ class RobotDetailViewModel(
         }
     }
 
-    fun saveSettings(newSettings: RobotSettings) {
+    fun saveSettings(newSettings: RobotSettings, hostPort: String) {
         viewModelScope.launch {
-            runCatching { repository.updateSettings(newSettings) }.onSuccess { _settings.value = newSettings }
+            runCatching { repository.updateSettings(newSettings) }   // пока адрес ещё старый
+            ServerConfig.hostPort.value = hostPort
+            repository.refreshFleet()
+            _settings.value = newSettings
         }
     }
 

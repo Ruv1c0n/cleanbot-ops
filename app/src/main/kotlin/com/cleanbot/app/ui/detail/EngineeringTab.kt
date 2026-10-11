@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cleanbot.app.data.remote.ServerConfig
 
 @Composable
 fun EngineeringTab(viewModel: RobotDetailViewModel) {
@@ -36,7 +37,7 @@ fun EngineeringTab(viewModel: RobotDetailViewModel) {
     }
 
     var name by remember(settings) { mutableStateOf(settings?.displayName ?: "") }
-    var address by remember(settings) { mutableStateOf(settings?.serverAddress ?: "") }
+    var address by remember { mutableStateOf(ServerConfig.hostPort.value) }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Настройки", style = MaterialTheme.typography.titleMedium)
@@ -55,9 +56,15 @@ fun EngineeringTab(viewModel: RobotDetailViewModel) {
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(8.dp))
-        Button(onClick = {
-            settings?.let { viewModel.saveSettings(it.copy(displayName = name, serverAddress = address)) }
-        }) { Text("Сохранить") }
+        Button(
+            enabled = address.isNotBlank(),
+            onClick = {
+                val host = address.trim().removePrefix("ws://").removePrefix("http://").trimEnd('/')
+                settings?.let {
+                    viewModel.saveSettings(it.copy(displayName = name, serverAddress = "ws://$host"), host)
+                }
+            }
+        ) { Text("Сохранить") }
 
         Spacer(Modifier.height(24.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

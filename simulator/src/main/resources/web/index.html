@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CleanBot Ops — тестовая консоль</title>
+    <style>
+        :root { --ink:#18302c; --muted:#5d716d; --line:#cfdcd9; --bg:#f5f7f7; --card:#fff; --primary:#00695c;
+          --idle:#616161; --cleaning:#2e7d32; --paused:#f9a825; --returning:#1565c0; --charging:#6a1b9a; --error:#c62828; }
+        * { box-sizing:border-box; }
+        body { margin:0; font:15px/1.45 system-ui,"Segoe UI",sans-serif; color:var(--ink); background:var(--bg); }
+        header { display:flex; align-items:center; gap:12px; padding:14px 20px; background:var(--primary); color:#fff; }
+        header h1 { font-size:18px; margin:0; font-weight:600; }
+        #conn { width:10px; height:10px; border-radius:50%; background:var(--error); }
+        #conn.ok { background:#8bf0a8; }
+        main { max-width:1000px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+        .fleet { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); }
+        .robot { background:var(--card); border:2px solid var(--line); border-radius:8px; padding:14px; cursor:pointer; }
+        .robot.sel { border-color:var(--primary); }
+        .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+        .top b { font-size:16px; }
+        .badge { color:#fff; padding:2px 9px; border-radius:6px; font-size:12px; font-weight:500; }
+        .err { background:var(--error); margin-left:6px; }
+        .bar { height:8px; background:#e3ebe9; border-radius:4px; overflow:hidden; margin:3px 0 9px; }
+        .bar i { display:block; height:100%; background:var(--primary); transition:width .4s; }
+        .row { display:flex; justify-content:space-between; color:var(--muted); font-size:13px; }
+        .cmds { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+        button { font:inherit; font-size:13px; padding:6px 11px; border-radius:6px; border:1px solid var(--primary);
+          background:var(--primary); color:#fff; cursor:pointer; }
+        button.alt { background:#fff; color:var(--primary); }
+        button:disabled { opacity:.35; cursor:not-allowed; }
+        button:focus-visible { outline:3px solid #ffb300; outline-offset:2px; }
+        #resp { padding:8px 12px; background:#e8f1ef; border-radius:6px; font-size:13px; min-height:36px; }
+        #resp.bad { background:#fbe3e3; color:#8e1b1b; }
+        .panels { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); }
+        section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; }
+        section h2 { font-size:15px; margin:0 0 8px; }
+        ul { list-style:none; margin:0; padding:0; font-size:13px; }
+        li { padding:4px 0; border-bottom:1px solid #edf2f1; }
+        li.ERROR { color:var(--error); } li.WARN { color:#8a6200; }
+        .t { color:var(--muted); }
+    </style>
+</head>
+<body>
+<header><span id="conn" title="WebSocket"></span><h1>CleanBot Ops — тестовая консоль</h1></header>
+<main>
+    <div class="fleet" id="fleet"><p>Ждём телеметрию…</p></div>
+    <div id="resp">Выбери робота и отправь команду.</div>
+    <div class="panels">
+        <section><h2>Журнал: <span id="logName">—</span></h2><ul id="logs"></ul></section>
+        <section><h2>Последние сессии: <span id="sesName">—</span></h2><ul id="sessions"></ul></section>
+    </div>
+</main>
+<script>
+    const LABELS = { IDLE:"Простой", CLEANING:"Уборка", PAUSED:"Пауза", RETURNING:"Возврат", CHARGING:"Зарядка", ERROR:"Ошибка" };
+    const ERRORS = { STUCK:"Застрял", BRUSH_JAMMED:"Щётка заклинила", TANK_FULL:"Бак полон", SENSOR_FAULT:"Сбой датчика", LOW_BATTERY:"Низкий заряд" };
+    const COMMANDS = [
+      ["START","Старт",s=>s==="IDLE",0], ["PAUSE","Пауза",s=>s==="CLEANING",0], ["RESUME","Продолжить",s=>s==="PAUSED",0],
+      ["ABORT","Прервать",s=>s==="CLEANING"||s==="PAUSED",1], ["RETURN_HOME","Домой",s=>["CLEANING","PAUSED","IDLE"].includes(s),1],
+      ["RESET","Сброс ошибки",s=>s==="ERROR",1],
+    ];
+    const robots = {}; let selected = null;
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+    function render() {
+      const ids = Object.keys(robots).sort();
+      if (!ids.length) return;
+      $("fleet").innerHTML = ids.map(id => {
+        const r = robots[id];
+        return `<div class="robot ${id===selected?"sel":""}" data-id="${id}">
+          <div class="top"><b>${esc(id)}</b><span>
+            <span class="badge" style="background:var(--${r.state.toLowerCase()})">${LABELS[r.state]||r.state}</span>
+            ${r.error?`<span class="badge err">${ERRORS[r.error]||r.error}</span>`:""}</span></div>
+          <div class="row"><span>Заряд</span><span>${r.battery}%</span></div>
+          <div class="bar"><i style="width:${r.battery}%"></i></div>
+          <div class="row"><span>Прогресс уборки</span><span>${Math.round(r.progress*100)}%</span></div>
+          <div class="bar"><i style="width:${r.progress*100}%"></i></div>
+          <div class="row"><span>Позиция</span><span>(${r.position.x}, ${r.position.y})</span></div>
+          <div class="cmds">${COMMANDS.map(([c,l,ok,alt])=>
+            `<button class="${alt?"alt":""}" data-cmd="${c}" data-id="${id}" ${ok(r.state)?"":"disabled"}>${l}</button>`).join("")}</div>
+        </div>`;
+      }).join("");
+    }
+
+    $("fleet").addEventListener("click", async e => {
+      const card = e.target.closest(".robot"); if (!card) return;
+      const id = card.dataset.id, btn = e.target.closest("button[data-cmd]");
+      if (id !== selected) { selected = id; loadDetails(); }
+      if (btn) {
+        const body = { command: btn.dataset.cmd, requestId: Math.random().toString(16).slice(2, 10) };
+        try {
+          const res = await fetch(`/robots/${id}/commands`, { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(body) });
+          const j = await res.json();
+          $("resp").className = j.accepted ? "" : "bad";
+          $("resp").textContent = `${id} · ${body.command}: ` + (j.accepted ? "принята" : `отклонена (${j.reason})`);
+          loadDetails();
+        } catch (err) { $("resp").className = "bad"; $("resp").textContent = "Ошибка запроса: " + err.message; }
+      }
+      render();
+    });
+
+    async function loadDetails() {
+      if (!selected) return;
+      try {
+        const [logs, ses] = await Promise.all([
+          fetch(`/robots/${selected}/logs`).then(r => r.json()),
+          fetch(`/robots/${selected}/sessions`).then(r => r.json()),
+        ]);
+        $("logName").textContent = $("sesName").textContent = selected;
+        $("logs").innerHTML = logs.slice(0, 15).map(l =>
+          `<li class="${l.level}"><span class="t">${esc(l.timestamp.slice(11,19))}</span> ${esc(l.message)}</li>`).join("") || "<li>Пока пусто</li>";
+        $("sessions").innerHTML = ses.slice(0, 8).map(s =>
+          `<li><span class="t">${esc(s.startedAt.slice(0,16).replace("T"," "))}</span> ${s.durationMinutes} мин, ${s.areaCleaned} м², ${esc(s.mode)}${s.aborted?" — прервана":""}</li>`).join("");
+      } catch (e) { /* сервер недоступен */ }
+    }
+    setInterval(loadDetails, 3000);
+
+    function connect() {
+      const ws = new WebSocket(`ws://${location.host}/telemetry`);
+      ws.onopen = () => $("conn").classList.add("ok");
+      ws.onmessage = ev => { JSON.parse(ev.data).forEach(t => robots[t.robotId] = t); render(); };
+      ws.onclose = () => { $("conn").classList.remove("ok"); setTimeout(connect, 2000); };
+    }
+    connect();
+</script>
+</body>
+</html>

@@ -16,10 +16,11 @@ import kotlin.random.Random
  */
 class RobotEngine(
     val id: String,
-    val name: String,
+    @Volatile var name: String,
     private val gridWidth: Int = 24,
     private val gridHeight: Int = 12,
-    private val dockPosition: Position = Position(0, 0)
+    private val dockPosition: Position = Position(0, 0),
+    private val faultChance: Double = 0.01
 ) {
     private val mutex = Mutex()
 
@@ -91,8 +92,8 @@ class RobotEngine(
 
     private suspend fun tickCleaning() {
         battery = (battery - 1).coerceAtLeast(0)
-        progress = (progress + 0.01).coerceAtMost(1.0)
-        sessionAreaAccum += 2.5
+        progress = (progress + 0.02).coerceAtMost(1.0)
+        sessionAreaAccum += 5.0
         position = randomStep(position)
 
         when {
@@ -106,9 +107,10 @@ class RobotEngine(
                 finishSession(aborted = false)
                 state = RobotState.RETURNING
             }
-            Random.nextDouble() < 0.01 -> {
+            Random.nextDouble() < faultChance -> {
                 error = RobotError.entries.filter { it != RobotError.LOW_BATTERY }.random()
                 onLog?.invoke("ERROR", "Авария: $error")
+                finishSession(aborted = true)
                 state = RobotFsm.fault(state)
             }
         }
