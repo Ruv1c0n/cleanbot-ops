@@ -34,3 +34,5 @@ google-services.json
 *.hprof
 
 .env
+agent/workspace/
+agent/.venv
