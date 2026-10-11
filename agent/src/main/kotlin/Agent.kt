@@ -2,6 +2,7 @@ import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
+import io.ktor.client.plugins.*
 import io.ktor.http.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
@@ -12,80 +13,84 @@ val env = File(".env").readLines()
     .filter { "=" in it && !it.startsWith("#") }
     .associate { it.substringBefore("=").trim() to it.substringAfter("=").trim() }
 val sim = env["SIMULATOR_URL"] ?: "http://localhost:8080"
-val http = HttpClient(CIO)
+val ollama = env["OLLAMA_URL"] ?: "http://localhost:11434"
+val http = HttpClient(CIO) { install(HttpTimeout) { requestTimeoutMillis = 300_000 } }
 
-// ---------- инструменты ----------
-val tools = buildJsonArray {
-    add(buildJsonObject {
-        put("name", "list_robots")
-        put("description", "Список роботов парка: id, состояние, заряд, ошибка")
-        putJsonObject("input_schema") { put("type", "object"); putJsonObject("properties") {} }
-    })
-    add(buildJsonObject {
-        put("name", "send_command")
-        put("description", "Отправить команду роботу. Недопустимая в текущем состоянии команда вернёт ILLEGAL_STATE")
-        putJsonObject("input_schema") {
+fun tool(name: String, desc: String, props: JsonObjectBuilder.() -> Unit, req: List<String>) = buildJsonObject {
+    put("type", "function")
+    putJsonObject("function") {
+        put("name", name); put("description", desc)
+        putJsonObject("parameters") {
             put("type", "object")
-            putJsonObject("properties") {
-                putJsonObject("robot_id") { put("type", "string") }
-                putJsonObject("command") {
-                    put("type", "string")
-                    putJsonArray("enum") { listOf("START","PAUSE","RESUME","ABORT","RETURN_HOME").forEach(::add) }
-                }
-            }
-            putJsonArray("required") { add("robot_id"); add("command") }
+            putJsonObject("properties", props)
+            putJsonArray("required") { req.forEach(::add) }
         }
-    })
+    }
 }
 
-suspend fun runTool(name: String, input: JsonObject): String = when (name) {
+val tools = buildJsonArray {
+    add(tool("list_robots", "Список роботов парка: id, состояние, заряд, ошибка", {}, emptyList()))
+    add(tool("send_command", "Отправить команду роботу. Недопустимая команда вернёт ILLEGAL_STATE", {
+        putJsonObject("robot_id") { put("type", "string") }
+        putJsonObject("command") {
+            put("type", "string")
+            putJsonArray("enum") { listOf("START", "PAUSE", "RESUME", "ABORT", "RETURN_HOME").forEach(::add) }
+        }
+    }, listOf("robot_id", "command")))
+}
+
+suspend fun runTool(name: String, args: JsonObject): String = when (name) {
     "list_robots" -> http.get("$sim/robots").bodyAsText()
-    "send_command" -> http.post("$sim/robots/${input["robot_id"]!!.jsonPrimitive.content}/commands") {
+    "send_command" -> http.post("$sim/robots/${args["robot_id"]!!.jsonPrimitive.content}/commands") {
         contentType(ContentType.Application.Json)
-        setBody("""{"command":"${input["command"]!!.jsonPrimitive.content}","requestId":"${UUID.randomUUID()}"}""")
+        setBody("""{"command":"${args["command"]!!.jsonPrimitive.content}","requestId":"${UUID.randomUUID()}"}""")
     }.bodyAsText()
     else -> """{"error":"unknown tool"}"""
 }
 
-// ---------- цикл агента ----------
 fun main() = runBlocking {
-    val prompt = readln()
-    val messages = mutableListOf<JsonElement>(buildJsonObject { put("role", "user"); put("content", prompt) })
+    print("> "); val prompt = readln()
+    val messages = mutableListOf<JsonElement>(
+        buildJsonObject {
+            put("role", "system")
+            put("content", "Ты ассистент оператора парка клининговых роботов. Сначала вызови list_robots, потом действуй. Отвечай по-русски кратко.")
+        },
+        buildJsonObject { put("role", "user"); put("content", prompt) }
+    )
     var inTok = 0; var outTok = 0
 
-    repeat(10) { step ->                                   // лимит итераций
-        val resp = http.post("https://api.anthropic.com/v1/messages") {
-            header("x-api-key", env["ANTHROPIC_API_KEY"]!!)
-            header("anthropic-version", "2023-06-01")
+    repeat(10) { step ->
+        val resp = http.post("$ollama/api/chat") {
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
-                put("model", env["MODEL"] ?: "claude-sonnet-5-5")
-                put("max_tokens", 1024)
-                put("system", "Ты ассистент оператора парка клининговых роботов. Сначала смотри состояние, потом действуй.")
+                put("model", env["MODEL"] ?: "qwen3:4b-instruct")
+                put("stream", false)
+                putJsonObject("options") { put("num_ctx", 8192) }
                 put("tools", tools)
                 put("messages", JsonArray(messages))
             }.toString())
         }
         val json = Json.parseToJsonElement(resp.bodyAsText()).jsonObject
-        inTok += json["usage"]!!.jsonObject["input_tokens"]!!.jsonPrimitive.int
-        outTok += json["usage"]!!.jsonObject["output_tokens"]!!.jsonPrimitive.int
-        val content = json["content"]!!.jsonArray
-        messages += buildJsonObject { put("role", "assistant"); put("content", content) }
+        inTok += json["prompt_eval_count"]?.jsonPrimitive?.int ?: 0
+        outTok += json["eval_count"]?.jsonPrimitive?.int ?: 0
+        val msg = json["message"]!!.jsonObject
+        messages += msg
 
-        if (json["stop_reason"]!!.jsonPrimitive.content != "tool_use") {
-            content.filter { it.jsonObject["type"]!!.jsonPrimitive.content == "text" }
-                .forEach { println("🤖 " + it.jsonObject["text"]!!.jsonPrimitive.content) }
+        val calls = msg["tool_calls"]?.jsonArray
+        if (calls.isNullOrEmpty()) {
+            println("🤖 " + msg["content"]?.jsonPrimitive?.content)
             println("tokens: in=$inTok out=$outTok")
             return@runBlocking
         }
-        val results = content.filter { it.jsonObject["type"]!!.jsonPrimitive.content == "tool_use" }.map { b ->
-            val o = b.jsonObject
-            val out = runTool(o["name"]!!.jsonPrimitive.content, o["input"]!!.jsonObject)
-            println("🔧 [$step] ${o["name"]} ${o["input"]} -> $out")   // лог для LAB2.md
-            buildJsonObject {
-                put("type", "tool_result"); put("tool_use_id", o["id"]!!); put("content", out)
+        calls.forEach { c ->
+            val f = c.jsonObject["function"]!!.jsonObject
+            val name = f["name"]!!.jsonPrimitive.content
+            val args = f["arguments"]!!.jsonObject
+            val out = runTool(name, args)
+            println("🔧 [$step] $name $args -> $out")
+            messages += buildJsonObject {
+                put("role", "tool"); put("tool_name", name); put("content", out)
             }
         }
-        messages += buildJsonObject { put("role", "user"); put("content", JsonArray(results)) }
     }
 }

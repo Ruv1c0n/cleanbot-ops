@@ -9,7 +9,6 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
-import io.ktor.server.plugins.calllogging.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.routing.*
@@ -33,7 +32,6 @@ fun Application.module() {
 
     install(ContentNegotiation) { json(json) }
     install(WebSockets) { pingPeriod = Duration.ofSeconds(15) }
-    install(CallLogging)
     install(CORS) {
         anyHost()
         allowHeader(HttpHeaders.ContentType)

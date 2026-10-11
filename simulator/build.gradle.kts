@@ -30,6 +30,8 @@ dependencies {
 
     testImplementation("io.ktor:ktor-server-test-host:$ktorVersion")
     testImplementation(kotlin("test"))
+
+    implementation("io.ktor:ktor-server-call-logging:2.3.12")
 }
 
 kotlin {
