@@ -17,3 +17,4 @@ rootProject.name = "cleanbot-ops"
 
 include(":simulator")
 include(":app")
+include(":agent")
