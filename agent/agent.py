@@ -97,8 +97,68 @@ def write_file(path: str, content: str) -> str:
     return f"Файл {path} записан ({len(content)} символов)."
 
 
+TASKS_FILE = "tasks.json"          # лежит в workspace/
+PRIORITIES = ("low", "mid", "high")
+STATUSES = ("open", "done", "all")
+
+
+def _load_tasks() -> list:
+    path = safe_path(TASKS_FILE)
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _save_tasks(tasks: list) -> None:
+    safe_path(TASKS_FILE).write_text(
+        json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def add_task(title: str, priority: str, robot_id: str = "") -> str:
+    if not title.strip():
+        raise ValueError("title не может быть пустым")
+    if priority not in PRIORITIES:
+        raise ValueError(
+            f"priority должен быть одним из: {', '.join(PRIORITIES)}")
+    tasks = _load_tasks()
+    task = {
+        "id": max((t["id"] for t in tasks), default=0) + 1,
+        "title": title.strip(),
+        "priority": priority,
+        "robot_id": robot_id.strip(),
+        "status": "open",
+    }
+    tasks.append(task)
+    _save_tasks(tasks)
+    return f"Задача #{task['id']} добавлена: {task['title']} (приоритет {priority})"
+
+
+def list_tasks(status: str = "open", priority: str = "") -> str:
+    if status not in STATUSES:
+        raise ValueError(f"status должен быть одним из: {', '.join(STATUSES)}")
+    if priority and priority not in PRIORITIES:
+        raise ValueError(
+            f"priority должен быть одним из: {', '.join(PRIORITIES)}")
+    tasks = [
+        t for t in _load_tasks()
+        if (status == "all" or t["status"] == status)
+        and (not priority or t["priority"] == priority)
+    ]
+    if not tasks:
+        return "Задач не найдено."
+    return "\n".join(
+        f"#{t['id']} [{t['priority']}] {t['title']}"
+        + (f" (робот {t['robot_id']})" if t["robot_id"] else "")
+        for t in tasks
+    )
+
+
 FUNCS = {"list_files": list_files,
-         "read_file": read_file, "write_file": write_file}
+         "read_file": read_file,
+         "write_file": write_file,
+         "add_task": add_task,
+         "list_tasks": list_tasks, }
 
 TOOLS = [
     {"type": "function", "function": {
@@ -120,7 +180,41 @@ TOOLS = [
                        "properties": {
                            "path": {"type": "string", "description": "Путь к файлу, например 'TODO.md'"},
                            "content": {"type": "string", "description": "Полное содержимое файла"}},
-                       "required": ["path", "content"]}}}
+                       "required": ["path", "content"]}}},
+    {
+        "type": "function",
+        "function": {
+            "name": "add_task",
+            "description": "Добавить задачу уборки в список задач проекта. Вызывай, когда пользователь просит завести, запланировать или добавить задачу. Одна задача на один вызов.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Краткое название задачи, например 'Помыть зону A'"},
+                    "priority": {"type": "string", "enum": ["low", "mid", "high"],
+                                 "description": "Приоритет: high для срочных задач, low для несрочных, mid для задач без указания приоритета"},
+                    "robot_id": {"type": "string", "description": "Необязательно: идентификатор робота, например 'R1'"},
+                },
+                "required": ["title", "priority"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tasks",
+            "description": "Показать задачи из списка. Вызывай, когда пользователь просит показать, найти или проверить задачи. Срочные задачи это priority=high.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["open", "done", "all"],
+                               "description": "Какие задачи показать, по умолчанию open"},
+                    "priority": {"type": "string", "enum": ["low", "mid", "high"],
+                                 "description": "Необязательно: показать только задачи этого приоритета"},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
