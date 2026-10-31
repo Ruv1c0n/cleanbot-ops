@@ -39,3 +39,4 @@ agent/workspace/*
 agent/sessions/*
 !agent/sessions/.gitkeep
 agent/.venv
+__pycache__/
