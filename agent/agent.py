@@ -112,16 +112,17 @@ def _turn_starts(messages: list) -> list:
 
 
 def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
-                          strategy: str = STRATEGY) -> list:
-    """Держит историю в пределах бюджета. Ходы удаляются только целиком
-    (user вместе с ответом ассистента и tool-сообщениями), поэтому
-    «осиротевших» role: tool без предшествующего tool_calls не остаётся.
-    system сохраняется всегда."""
-    est = estimate_tokens(messages)
+                          strategy: str = STRATEGY, tools=None) -> list:
+    """Держит историю в пределах бюджета. Размер считается вместе с
+    сериализованными tools — они тоже уходят в каждый запрос. Ходы удаляются
+    только целиком (user вместе с ответом ассистента и tool-сообщениями),
+    поэтому «осиротевших» role: tool без предшествующего tool_calls не
+    остаётся. system сохраняется всегда."""
+    est = estimate_tokens(messages, tools)
     if est <= budget:
         return messages
     dropped = []
-    while estimate_tokens(messages) > budget and len(_turn_starts(messages)) > 1:
+    while estimate_tokens(messages, tools) > budget and len(_turn_starts(messages)) > 1:
         starts = _turn_starts(messages)
         cut = starts[1]                     # граница первого хода
         dropped += messages[starts[0]:cut]
@@ -133,10 +134,10 @@ def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
     if strategy == "summarize":
         summary = summarize(dropped)
         print(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога; "
-              f"{est} -> {estimate_tokens(messages)} усл. токенов]")
+              f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
         return messages[:1] + [{"role": "user", "content": summary}] + messages[1:]
     print(f"[TRIM: удалено {len(dropped)} сообщений; "
-          f"{est} -> {estimate_tokens(messages)} усл. токенов]")
+          f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
     return messages
 
 
@@ -383,7 +384,8 @@ def run_agent(messages: list) -> str:
     """messages — полная история (для сессии); для запроса к API каждый раз
     берём копию, обрезанную до бюджета."""
     for step in range(MAX_STEPS):
-        req = ensure_context_budget(list(messages), CONTEXT_BUDGET, STRATEGY)
+        req = ensure_context_budget(list(messages), CONTEXT_BUDGET, STRATEGY,
+                                    TOOLS)
         est = estimate_tokens(req, TOOLS)                # оценка до запроса
         response = chat(messages=req, tools=TOOLS)
         choice = response.choices[0]
