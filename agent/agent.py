@@ -1,5 +1,7 @@
+import argparse
 import json
 import os
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -56,9 +58,103 @@ MAX_STEPS = 8
 SYSTEM_PROMPT = (
     "Ты ассистент по проекту. Файлы проекта лежат в песочнице. "
     "Чтобы узнать содержимое, используй инструменты list_files и read_file. "
-    "Чтобы написать файл, используй write_file."
+    "Чтобы написать файл, используй write_file. "
+    "Чтобы найти факт в документации проекта, используй search_docs. "
     "Отвечай по-русски, кратко."
 )
+
+
+# ---------- шаг 1: сессия на диске ----------
+SESSIONS_DIR = Path(__file__).parent / "sessions"
+SESSION_ID = "default"
+STRATEGY = "trim"           # trim | summarize
+CONTEXT_BUDGET = 6000       # бюджет контекста в «условных токенах»
+
+
+def _session_path(session_id: str) -> Path:
+    # защищаемся от путей вроде ../../.env в имени сессии
+    safe = re.sub(r"[^\w.-]", "_", session_id)
+    return SESSIONS_DIR / f"{safe}.json"
+
+
+def load_session(session_id: str, system_prompt: str) -> list:
+    """Загружает историю сессии. system в файл не сохраняется и кладётся
+    заново ровно один раз, поэтому дубля системного промпта не бывает."""
+    path = _session_path(session_id)
+    if not path.is_file():
+        return [{"role": "system", "content": system_prompt}]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [{"role": "system", "content": system_prompt}] + data
+
+
+def save_session(session_id: str, messages: list) -> None:
+    """Сохраняет историю без system (секретов из .env там нет и не появляется)."""
+    SESSIONS_DIR.mkdir(exist_ok=True)
+    data = [m for m in messages if m.get("role") != "system"]
+    _session_path(session_id).write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+# ---------- шаг 2: оценка размера контекста ----------
+def estimate_tokens(messages: list, tools=None) -> int:
+    """Грубая оценка токенов: сумма len(text) // 4 по messages + tools."""
+    size = len(json.dumps(messages, ensure_ascii=False))
+    if tools:
+        size += len(json.dumps(tools, ensure_ascii=False))
+    return size // 4
+
+
+# ---------- шаги 3-4: бюджет контекста ----------
+def _turn_starts(messages: list) -> list:
+    """Индексы, с которых начинаются ходы пользователя (system — messages[0])."""
+    return [i for i, m in enumerate(messages) if m["role"] == "user"]
+
+
+def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
+                          strategy: str = STRATEGY) -> list:
+    """Держит историю в пределах бюджета. Ходы удаляются только целиком
+    (user вместе с ответом ассистента и tool-сообщениями), поэтому
+    «осиротевших» role: tool без предшествующего tool_calls не остаётся.
+    system сохраняется всегда."""
+    est = estimate_tokens(messages)
+    if est <= budget:
+        return messages
+    dropped = []
+    while estimate_tokens(messages) > budget and len(_turn_starts(messages)) > 1:
+        starts = _turn_starts(messages)
+        cut = starts[1]                     # граница первого хода
+        dropped += messages[starts[0]:cut]
+        messages = messages[:starts[0]] + messages[cut:]
+    if not dropped:
+        print(f"[TRIM: превышение бюджета ({est} > {budget}), "
+              f"но кроме последнего хода удалять нечего]")
+        return messages
+    if strategy == "summarize":
+        summary = summarize(dropped)
+        print(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога; "
+              f"{est} -> {estimate_tokens(messages)} усл. токенов]")
+        return messages[:1] + [{"role": "user", "content": summary}] + messages[1:]
+    print(f"[TRIM: удалено {len(dropped)} сообщений; "
+          f"{est} -> {estimate_tokens(messages)} усл. токенов]")
+    return messages
+
+
+def summarize(dropped: list) -> str:
+    """Сжимает старый хвост отдельным коротким вызовом модели без tools."""
+    text = "\n".join(
+        f"{m['role']}: {m.get('content')}"
+        for m in dropped
+        if m.get("role") != "tool" and m.get("content")
+    )
+    resp = chat(messages=[
+        {"role": "system", "content":
+            "Сожми диалог в краткую память для агента. Ответь одной строкой "
+            "строго вида: [память диалога] Пользователя зовут … Ранее сделано: … "
+            "Открытые задачи: … Без вступлений и пояснений."},
+        {"role": "user", "content": text[:4000]},
+    ])
+    return resp.choices[0].message.content.strip()
 
 
 # ---------- инструменты ----------
@@ -95,6 +191,35 @@ def write_file(path: str, content: str) -> str:
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_text(content, encoding="utf-8")
     return f"Файл {path} записан ({len(content)} символов)."
+
+
+# ---------- шаг 5: поиск по документам проекта ----------
+def search_docs(query: str, limit: int = 3) -> str:
+    """Keyword-поиск по workspace/docs/. Вне песочницы не выходит: путь
+    жёстко задан, пользовательский ввод влияет только на текст запроса."""
+    if not str(query).strip():
+        raise ValueError("query не может быть пустым")
+    limit = max(1, min(int(limit), 5))
+    # регистронезависимо, значимые слова >= 3 символов
+    words = [w for w in re.findall(r"\w+", str(query).lower()) if len(w) > 2]
+    if not words:
+        raise ValueError("в query нет значимых слов")
+    scored = []
+    for path in sorted((WORKSPACE / "docs").glob("*.md")):
+        paragraphs = [p.strip() for p in
+                      path.read_text(encoding="utf-8").split("\n\n") if p.strip()]
+        for para in paragraphs:
+            low = para.lower()
+            score = sum(low.count(w) for w in words)
+            if score:
+                scored.append((score, path.name, para))
+    if not scored:
+        return f"По запросу '{query}' ничего не найдено."
+    scored.sort(key=lambda x: -x[0])
+    return "\n\n".join(
+        f"{n}. {name} (score={score}): {para[:400]}"
+        for n, (score, name, para) in enumerate(scored[:limit], 1)
+    )
 
 
 TASKS_FILE = "tasks.json"          # лежит в workspace/
@@ -157,6 +282,7 @@ def list_tasks(status: str = "open", priority: str = "") -> str:
 FUNCS = {"list_files": list_files,
          "read_file": read_file,
          "write_file": write_file,
+         "search_docs": search_docs,
          "add_task": add_task,
          "list_tasks": list_tasks, }
 
@@ -181,6 +307,14 @@ TOOLS = [
                            "path": {"type": "string", "description": "Путь к файлу, например 'TODO.md'"},
                            "content": {"type": "string", "description": "Полное содержимое файла"}},
                        "required": ["path", "content"]}}},
+    {"type": "function", "function": {
+        "name": "search_docs",
+        "description": "Поиск по документации проекта (workspace/docs): описание возможностей, REST API, телеметрия, FAQ. Вызывай, когда нужно найти факт о проекте.",
+        "parameters": {"type": "object",
+                       "properties": {
+                           "query": {"type": "string", "description": "Поисковый запрос, например 'приоритет задачи по умолчанию'"},
+                           "limit": {"type": "integer", "description": "Сколько фрагментов вернуть, 1-5, по умолчанию 3"}},
+                       "required": ["query"]}}},
     {
         "type": "function",
         "function": {
@@ -230,19 +364,39 @@ def execute_tool(name: str, raw_args: str) -> str:
         return f"ОШИБКА: {e}"
 
 
+def as_dict(msg) -> dict:
+    """assistant-сообщение -> dict без служебных полей (reasoning у
+    reasoning-моделей и т.п.), чтобы история оставалась валидной для API."""
+    d = {"role": msg.role, "content": msg.content or ""}
+    if msg.tool_calls:
+        d["tool_calls"] = [
+            {"id": c.id, "type": "function",
+             "function": {"name": c.function.name,
+                          "arguments": c.function.arguments}}
+            for c in msg.tool_calls
+        ]
+    return d
+
+
 # ---------- агентный цикл ----------
 def run_agent(messages: list) -> str:
+    """messages — полная история (для сессии); для запроса к API каждый раз
+    берём копию, обрезанную до бюджета."""
     for step in range(MAX_STEPS):
-        response = chat(messages=messages, tools=TOOLS)
+        req = ensure_context_budget(list(messages), CONTEXT_BUDGET, STRATEGY)
+        est = estimate_tokens(req, TOOLS)                # оценка до запроса
+        response = chat(messages=req, tools=TOOLS)
         choice = response.choices[0]
         msg = choice.message
-        print(f"[шаг {step}: model={response.model} in={response.usage.prompt_tokens} "
-              f"out={response.usage.completion_tokens} finish={choice.finish_reason}]")
+        print(f"[шаг {step}: model={response.model} оценка={est} "
+              f"in={response.usage.prompt_tokens} out={response.usage.completion_tokens} "
+              f"finish={choice.finish_reason}]")
 
         # ответ ассистента сохраняем всегда
-        messages.append(msg.model_dump(exclude_none=True))
+        messages.append(as_dict(msg))
 
         if not msg.tool_calls:                               # инструментов нет: это итоговый ответ
+            save_session(SESSION_ID, messages)
             return msg.content
 
         for call in msg.tool_calls:
@@ -251,12 +405,27 @@ def run_agent(messages: list) -> str:
                 f"🔧 {call.function.name}({call.function.arguments}) -> {result[:200]}")
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": result})
+        save_session(SESSION_ID, messages)                   # шаг агента завершён — сохраняем
 
     return "Достигнут лимит шагов, задача не завершена."
 
 
 if __name__ == "__main__":
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    parser = argparse.ArgumentParser(description="Агент cleanbot-ops (лаб. 3)")
+    parser.add_argument("-s", "--session", default="default",
+                        help="id сессии: история хранится в agent/sessions/<id>.json")
+    parser.add_argument("--strategy", choices=("trim", "summarize"),
+                        default="trim",
+                        help="что делать со старым хвостом истории при превышении бюджета")
+    parser.add_argument("--budget", type=int, default=CONTEXT_BUDGET,
+                        help="бюджет контекста в условных токенах")
+    args = parser.parse_args()
+
+    SESSION_ID, STRATEGY, CONTEXT_BUDGET = args.session, args.strategy, args.budget
+
+    messages = load_session(SESSION_ID, SYSTEM_PROMPT)
+    if len(messages) > 1:
+        print(f"[сессия '{SESSION_ID}': загружено {len(messages) - 1} сообщений из прошлых запусков]")
     while True:
         user_input = input("\n> ").strip()
         if user_input in ("exit", "quit", "выход"):
@@ -265,3 +434,4 @@ if __name__ == "__main__":
             continue
         messages.append({"role": "user", "content": user_input})
         print("🤖", run_agent(messages))
+        save_session(SESSION_ID, messages)
