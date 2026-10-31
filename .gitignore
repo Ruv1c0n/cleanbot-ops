@@ -34,5 +34,8 @@ google-services.json
 *.hprof
 
 .env
-agent/workspace/
+agent/workspace/*
+!agent/workspace/docs
+agent/sessions/*
+!agent/sessions/.gitkeep
 agent/.venv
