@@ -3,6 +3,7 @@ import json
 import os
 import re
 from pathlib import Path
+import openai
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -390,8 +391,11 @@ def run_agent(messages: list) -> str:
         response = chat(messages=req, tools=TOOLS)
         choice = response.choices[0]
         msg = choice.message
+        usage = response.usage                      # у некоторых бэкендов usage=None
+        in_tok = usage.prompt_tokens if usage else "?"
+        out_tok = usage.completion_tokens if usage else "?"
         print(f"[шаг {step}: model={response.model} оценка={est} "
-              f"in={response.usage.prompt_tokens} out={response.usage.completion_tokens} "
+              f"in={in_tok} out={out_tok} "
               f"finish={choice.finish_reason}]")
 
         # ответ ассистента сохраняем всегда
