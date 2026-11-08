@@ -1,11 +1,13 @@
 import argparse
 import json
 import os
-import re
-from pathlib import Path
 import openai
 from dotenv import load_dotenv
 from openai import OpenAI
+
+# чистая контекстная логика вынесена в context.py (issue #15)
+from context import (SESSIONS_DIR, _session_path, estimate_tokens,
+                     ensure_context_budget, safe_path, search_docs)
 
 load_dotenv()
 
@@ -53,7 +55,6 @@ def chat(**kwargs):
         return client.chat.completions.create(model=active["model"], **kwargs)
 
 
-WORKSPACE = (Path(__file__).parent / "workspace").resolve()   # песочница
 # лимит шагов цикла
 MAX_STEPS = 8
 SYSTEM_PROMPT = (
@@ -66,16 +67,9 @@ SYSTEM_PROMPT = (
 
 
 # ---------- шаг 1: сессия на диске ----------
-SESSIONS_DIR = Path(__file__).parent / "sessions"
 SESSION_ID = "default"
 STRATEGY = "trim"           # trim | summarize
 CONTEXT_BUDGET = 6000       # бюджет контекста в «условных токенах»
-
-
-def _session_path(session_id: str) -> Path:
-    # защищаемся от путей вроде ../../.env в имени сессии
-    safe = re.sub(r"[^\w.-]", "_", session_id)
-    return SESSIONS_DIR / f"{safe}.json"
 
 
 def load_session(session_id: str, system_prompt: str) -> list:
@@ -97,51 +91,6 @@ def save_session(session_id: str, messages: list) -> None:
     )
 
 
-# ---------- шаг 2: оценка размера контекста ----------
-def estimate_tokens(messages: list, tools=None) -> int:
-    """Грубая оценка токенов: сумма len(text) // 4 по messages + tools."""
-    size = len(json.dumps(messages, ensure_ascii=False))
-    if tools:
-        size += len(json.dumps(tools, ensure_ascii=False))
-    return size // 4
-
-
-# ---------- шаги 3-4: бюджет контекста ----------
-def _turn_starts(messages: list) -> list:
-    """Индексы, с которых начинаются ходы пользователя (system — messages[0])."""
-    return [i for i, m in enumerate(messages) if m["role"] == "user"]
-
-
-def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
-                          strategy: str = STRATEGY, tools=None) -> list:
-    """Держит историю в пределах бюджета. Размер считается вместе с
-    сериализованными tools — они тоже уходят в каждый запрос. Ходы удаляются
-    только целиком (user вместе с ответом ассистента и tool-сообщениями),
-    поэтому «осиротевших» role: tool без предшествующего tool_calls не
-    остаётся. system сохраняется всегда."""
-    est = estimate_tokens(messages, tools)
-    if est <= budget:
-        return messages
-    dropped = []
-    while estimate_tokens(messages, tools) > budget and len(_turn_starts(messages)) > 1:
-        starts = _turn_starts(messages)
-        cut = starts[1]                     # граница первого хода
-        dropped += messages[starts[0]:cut]
-        messages = messages[:starts[0]] + messages[cut:]
-    if not dropped:
-        print(f"[TRIM: превышение бюджета ({est} > {budget}), "
-              f"но кроме последнего хода удалять нечего]")
-        return messages
-    if strategy == "summarize":
-        summary = summarize(dropped)
-        print(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога; "
-              f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
-        return messages[:1] + [{"role": "user", "content": summary}] + messages[1:]
-    print(f"[TRIM: удалено {len(dropped)} сообщений; "
-          f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
-    return messages
-
-
 def summarize(dropped: list) -> str:
     """Сжимает старый хвост отдельным коротким вызовом модели без tools."""
     text = "\n".join(
@@ -160,14 +109,6 @@ def summarize(dropped: list) -> str:
 
 
 # ---------- инструменты ----------
-def safe_path(rel: str) -> Path:
-    # разворачивает '..' в настоящий путь
-    p = (WORKSPACE / rel).resolve()
-    if not p.is_relative_to(WORKSPACE):      # выход за песочницу запрещён
-        raise ValueError("путь вне песочницы")
-    return p
-
-
 def list_files(path: str = ".") -> str:
     p = safe_path(path)
     if not p.is_dir():
@@ -195,35 +136,7 @@ def write_file(path: str, content: str) -> str:
     return f"Файл {path} записан ({len(content)} символов)."
 
 
-# ---------- шаг 5: поиск по документам проекта ----------
-def search_docs(query: str, limit: int = 3) -> str:
-    """Keyword-поиск по workspace/docs/. Вне песочницы не выходит: путь
-    жёстко задан, пользовательский ввод влияет только на текст запроса."""
-    if not str(query).strip():
-        raise ValueError("query не может быть пустым")
-    limit = max(1, min(int(limit), 5))
-    # регистронезависимо, значимые слова >= 3 символов
-    words = [w for w in re.findall(r"\w+", str(query).lower()) if len(w) > 2]
-    if not words:
-        raise ValueError("в query нет значимых слов")
-    scored = []
-    for path in sorted((WORKSPACE / "docs").glob("*.md")):
-        paragraphs = [p.strip() for p in
-                      path.read_text(encoding="utf-8").split("\n\n") if p.strip()]
-        for para in paragraphs:
-            low = para.lower()
-            score = sum(low.count(w) for w in words)
-            if score:
-                scored.append((score, path.name, para))
-    if not scored:
-        return f"По запросу '{query}' ничего не найдено."
-    scored.sort(key=lambda x: -x[0])
-    return "\n\n".join(
-        f"{n}. {name} (score={score}): {para[:400]}"
-        for n, (score, name, para) in enumerate(scored[:limit], 1)
-    )
-
-
+# ---------- шаг 5: поиск по документам (search_docs в context.py) ----------
 TASKS_FILE = "tasks.json"          # лежит в workspace/
 PRIORITIES = ("low", "mid", "high")
 STATUSES = ("open", "done", "all")
@@ -386,7 +299,7 @@ def run_agent(messages: list) -> str:
     берём копию, обрезанную до бюджета."""
     for step in range(MAX_STEPS):
         req = ensure_context_budget(list(messages), CONTEXT_BUDGET, STRATEGY,
-                                    TOOLS)
+                                    TOOLS, summarize_fn=summarize)
         est = estimate_tokens(req, TOOLS)                # оценка до запроса
         response = chat(messages=req, tools=TOOLS)
         choice = response.choices[0]
