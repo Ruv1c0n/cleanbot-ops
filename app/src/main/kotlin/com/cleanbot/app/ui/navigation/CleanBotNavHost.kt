@@ -1,6 +1,7 @@
 package com.cleanbot.app.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -10,7 +11,14 @@ import com.cleanbot.app.ui.editor.PlanEditorScreen
 import com.cleanbot.app.ui.fleet.FleetListScreen
 
 @Composable
-fun CleanBotNavHost(navController: NavHostController = rememberNavController()) {
+fun CleanBotNavHost(
+    navController: NavHostController = rememberNavController(),
+    /** Id робота из intent-экстры тапа по уведомлению — открыть его дашборд сразу. */
+    initialRobotId: String? = null
+) {
+    LaunchedEffect(initialRobotId) {
+        initialRobotId?.takeIf { it.isNotBlank() }?.let { navController.navigate("robot/$it") }
+    }
     NavHost(navController = navController, startDestination = "fleet") {
         composable("fleet") {
             FleetListScreen(onRobotClick = { id -> navController.navigate("robot/$id") })
