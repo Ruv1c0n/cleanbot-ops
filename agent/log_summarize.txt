@@ -1,17 +1,125 @@
-[модель: gpt-oss:latest @ http://localhost:11434/v1]
-[сессия 'long-sum': загружено 19 сообщений из прошлых запусков]
+$ PYTHONIOENCODING=utf-8 .venv/Scripts/python agent.py --session a3sum --strategy summarize --budget 1500
+[модель: gpt-oss:latest @ http://localhost:11434/v1]
+
+> Меня зовут Даня, моя цель в проекте — довести cleanbot-ops до второго этапа. Запомни, пожалуйста.
+[шаг 0: model=gpt-oss:latest оценка=792 in=664 out=94 finish=stop]
+🤖 Принято, Даня. Цель: довести cleanbot‑ops до второго этапа. 💡
+
+> Добавь задачу «Протестировать экран статистики» с приоритетом mid.
+[шаг 0: model=gpt-oss:latest оценка=841 in=716 out=56 finish=tool_calls]
+🔧 add_task({"priority":"mid","robot_id":"","title":"Протестировать экран статистики"}) -> Задача #20 добавлена: Протестировать экран статистики (приоритет mid)
+[шаг 1: model=gpt-oss:latest оценка=934 in=778 out=26 finish=stop]
+🤖 Задача «Протестировать экран статистики» добавлена с приоритетом mid. 🚀
+
+> Добавь задачу «Сделать экран карты» с приоритетом high.
+[шаг 0: model=gpt-oss:latest оценка=983 in=827 out=29 finish=tool_calls]
+🔧 add_task({"priority":"high","robot_id":"","title":"Сделать экран карты"}) -> Задача #21 добавлена: Сделать экран карты (приоритет high)
+[шаг 1: model=gpt-oss:latest оценка=1070 in=884 out=23 finish=stop]
+🤖 Задача «Сделать экран карты» добавлена с приоритетом high. ✅
+
+> Прочитай файл protocol-rest.md и перескажи его коротко.
+[шаг 0: model=gpt-oss:latest оценка=1117 in=928 out=30 finish=tool_calls]
+🔧 list_files({"path":"."}) -> README.md
+docs/
+note.txt
+tasks.json
+[шаг 1: model=gpt-oss:latest оценка=1185 in=967 out=39 finish=tool_calls]
+🔧 list_files({"path":"docs"}) -> faq.md
+features.md
+protocol-rest.md
+protocol-telemetry.md
+[шаг 2: model=gpt-oss:latest оценка=1259 in=1011 out=22 finish=tool_calls]
+🔧 read_file({"path":"docs/protocol-rest.md"}) -> # REST API симулятора
+
+База: `http://<host>:8080`.
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/robots` | список роботов (id, name, state, battery, error) |
+| GET | `/robots/{id}` | сводка по 
+[SUMMARY: 6 сообщений сжаты в память диалога; 1571 -> 1369 усл. токенов]
+[шаг 3: model=gpt-oss:latest оценка=1408 in=1206 out=316 finish=stop]
+🤖 Файл **protocol-rest.md** описывает REST‑API симулятора роботов.
+
+**База**: `http://<host>:8080`.
+
+| Метод | Путь | Что делает |
+|---|---|---|
+| GET | `/robots` | список всех роботов (id, name, state, battery, error) |
+| GET | `/robots/{id}` | данные одного робота |
+| POST | `/robots/{id}/commands` | отправить команду роботу (`START`, `PAUSE`, `RESUME`, `ABORT`, `RETURN_HOME`, `RESET`) |
+| GET | `/robots/{id}/schedules` | текущее расписание |
+| PUT | `/robots/{id}/schedules` | заменить расписание целиком |
+| GET | `/robots/{id}/sessions?from&to` | история сессий по датам (ISO‑8601) |
+| GET | `/robots/{id}/logs` | журнал событий (новые сверху) |
+| GET/PUT | `/robots/{id}/settings` | настройки робота |
+
+**Ответы**:
+- При успехе: `{"accepted": true, …}`
+- При неудаче: `{"accepted": false, "reason": "ILLEGAL_STATE"}` или `"UNKNOWN_COMMAND"`.
+
+Таким образом, файл фиксирует все эндпоинты, команды и формат ответов для взаимодействия с роботом.
+
+> Прочитай файл protocol-telemetry.md и перескажи его коротко.
+[SUMMARY: 18 сообщений сжаты в память диалога; 1848 -> 782 усл. токенов]
+[шаг 0: model=gpt-oss:latest оценка=828 in=701 out=39 finish=tool_calls]
+🔧 list_files({"path":"."}) -> README.md
+docs/
+note.txt
+tasks.json
+[SUMMARY: 18 сообщений сжаты в память диалога; 1916 -> 850 усл. токенов]
+[шаг 1: model=gpt-oss:latest оценка=894 in=734 out=27 finish=tool_calls]
+🔧 list_files({"path":"docs"}) -> faq.md
+features.md
+protocol-rest.md
+protocol-telemetry.md
+[SUMMARY: 18 сообщений сжаты в память диалога; 1991 -> 925 усл. токенов]
+[шаг 2: model=gpt-oss:latest оценка=975 in=784 out=24 finish=tool_calls]
+🔧 read_file({"path":"docs/protocol-telemetry.md"}) -> # Телеметрия (WebSocket)
+
+`GET ws://<host>:8080/telemetry` — раз в ~1 секунду сервер присылает JSON-массив
+телеметрии по всем роботам сразу (батч).
+
+Пример элемента массива:
+
+```json
+{
+  "robotId": "c
+[SUMMARY: 18 сообщений сжаты в память диалога; 2247 -> 1181 усл. токенов]
+[шаг 3: model=gpt-oss:latest оценка=1267 in=1134 out=343 finish=stop]
+🤖 **Коротко о протоколе телеметрии (WebSocket):**
+
+- Подключение: `GET ws://<host>:8080/telemetry` – сервер отправляет раз в ~1 секунд JSON‑массив с телеметрией всех роботов.
+- Формат элемента массива:
+
+```json
+{
+  "robotId": "cleanbot-01",
+  "timestamp": "2026-09-05T14:32:11Z",
+  "state": "CLEANING",
+  "battery": 63,
+  "progress": 0.42,
+  "position": { "x": 12, "y": 4 },
+  "error": null
+}
+```
+
+- Состояния (`state`): `IDLE | CLEANING | PAUSED | RETURNING | CHARGING | ERROR`.
+- Ошибки (`error`): `STUCK`, `BRUSH_JAMMED`, `TANK_FULL`, `SENSOR_FAULT`, `LOW_BATTERY`.
+- Симуляция:
+  - `CLEANING`: заряд –1 %/тик, прогресс +2 %/тик.
+  - При заряд <= 15 % → `RETURNING`; при прогрессе 100 % → `RETURNING`.
+  - `CHARGING`: заряд +3 %/тик до 100 %.
+
+> Как меня зовут, какая моя цель, и какие задачи я просил добавить?
+[SUMMARY: 18 сообщений сжаты в память диалога; 2478 -> 1412 усл. токенов]
+[шаг 0: model=gpt-oss:latest оценка=1494 in=1448 out=140 finish=stop]
+🤖 - **Твоё имя:** Даня  
+- **Цель:** довести cleanbot‑ops до второго этапа.  
+- **Добавленные задачи:**  
+  1. «Протестировать экран статистики» – приоритет *mid*.  
+  2. «Сделать экран карты» – приоритет *high*.
+
+> exit
 
-> [SUMMARY: 19 сообщений сжаты в память диалога; 2675 -> 784 усл. токенов]
-[шаг 0: model=gpt-oss:latest оценка=854 in=724 out=449 finish=stop]
-🤖 Вы – **Даня**.  
-**Цель**: разрабатывать и тестировать функциональность робота‑уборщика и связанных с ним экранов (карта, статистика).  
-
-**Задачи, которые вы запросили добавить**:
-- Помыть зону A  
-- Зарядить робота R2  
-- Сделать экран карты  
-- Протестировать экран статистики  
-
-(Остальные задачи сейчас открыты и находятся в списке по приоритету.)
-
-> 
+[driver: процесс завершён, rc=0]

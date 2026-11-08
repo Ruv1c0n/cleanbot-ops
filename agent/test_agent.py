@@ -1,5 +1,8 @@
 """Юнит-тесты контекстной логики (issue #15). Сеть и Ollama не нужны:
 тестируем context.py напрямую, summarize подменяем колбэком."""
+import re
+from pathlib import Path
+
 import pytest
 
 import context
@@ -206,3 +209,17 @@ def test_safe_path_inside_ok(tmp_path, monkeypatch):
     monkeypatch.setattr(context, "WORKSPACE", tmp_path)
     assert safe_path("docs/x.md") == (tmp_path / "docs" / "x.md").resolve()
     assert safe_path("sub/../file.txt").name == "file.txt"
+
+
+# ---------- регрессия: fallback не должен быть мёртвым (issue #16) ----------
+def test_fallback_regression_import_openai():
+    """Баг: chat() ловила openai.APIConnectionError, но модуль openai в
+    agent.py не импортировался — NameError внутри except убивал обработчик,
+    и переключение на онлайн-модель не срабатывало никогда. Фикс — явный
+    import openai. Проверяем исходник, а не импортируем agent.py: тот при
+    импорте стучится к Ollama, а в тестах сети нет."""
+    src = Path(__file__).with_name("agent.py").read_text(encoding="utf-8")
+    assert re.search(r"^import openai$", src, re.M), \
+        "agent.py должен импортировать openai — иначе except openai.* мёртв"
+    assert "openai.APIConnectionError" in src, \
+        "fallback-обработчик APIConnectionError должен остаться на месте"
