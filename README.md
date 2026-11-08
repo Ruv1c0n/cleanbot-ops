@@ -1,9 +1,8 @@
-# cleanbot-ops
-Android console for industrial cleaning robot fleets — live telemetry, remote commands, schedules &amp; stats. Kotlin • Jetpack Compose • Ktor • WebSocket. Includes a digital-twin simulator.
-
 <div align="center">
 
 # cleanbot-ops
+
+Android console for industrial cleaning robot fleets — live telemetry, remote commands, schedules &amp; stats. Kotlin • Jetpack Compose • Ktor • WebSocket. Includes a digital-twin simulator.
 
 **Операционная консоль для парка промышленных клининговых роботов**
 
@@ -73,7 +72,7 @@ cleanbot-ops/
 | Текущее состояние | Событие | Следующее состояние |
 |---|---|---|
 | `IDLE` | `start` | `CLEANING` |
-| `IDLE` | `return_home` | `RETURNING` | REST-команда |
+| `IDLE` | `return_home` | `RETURNING` |
 | `CLEANING` | `pause` | `PAUSED` |
 | `PAUSED` | `resume` | `CLEANING` |
 | `CLEANING` / `PAUSED` | `abort` / `return_home` | `RETURNING` |
@@ -115,13 +114,21 @@ cleanbot-ops/
 **Требования:** JDK 17+, актуальная Android Studio, Android SDK.
 
 ```bash
-# 1) Симулятор (поднимается на порту 8080)
+# 1) Симулятор (порт по умолчанию 8080, переопределяется переменной SIMULATOR_PORT)
 ./gradlew :simulator:run
 
 # 2) Приложение — открыть корень репозитория в Android Studio → Run
 #    либо из консоли:
 ./gradlew :app:installDebug
 ```
+
+Если порт 8080 занят (например, Docker Desktop), задайте другой:
+
+```bash
+SIMULATOR_PORT=8081 ./gradlew :simulator:run
+```
+
+и укажите этот порт в адресе симулятора в инженерном меню приложения.
 
 **Адрес симулятора** задаётся в инженерном меню приложения:
 

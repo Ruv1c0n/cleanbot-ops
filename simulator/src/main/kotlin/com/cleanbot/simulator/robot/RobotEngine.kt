@@ -2,8 +2,6 @@ package com.cleanbot.simulator.robot
 
 import com.cleanbot.simulator.model.CleaningPlan
 import com.cleanbot.simulator.model.CommandResponse
-import com.cleanbot.simulator.model.GRID_HEIGHT
-import com.cleanbot.simulator.model.GRID_WIDTH
 import com.cleanbot.simulator.model.Position
 import com.cleanbot.simulator.model.RobotSummary
 import com.cleanbot.simulator.model.Telemetry
@@ -20,8 +18,6 @@ import kotlin.random.Random
 class RobotEngine(
     val id: String,
     @Volatile var name: String,
-    private val gridWidth: Int = GRID_WIDTH,
-    private val gridHeight: Int = GRID_HEIGHT,
     private val dockPosition: Position = Position(0, 0),
     private val faultChance: Double = 0.01
 ) {
@@ -37,7 +33,7 @@ class RobotEngine(
     private var sessionStartedAt: Instant? = null
     private var sessionAreaAccum: Double = 0.0
 
-    /** Маршрут текущей уборки: клетки зон плана «змейкой», зона за зоной. null — идёт случайное блуждание. */
+    /** Маршрут текущей уборки: клетки зон плана «змейкой», зона за зоной. Непуст при START (пустой план отклоняется). */
     private var route: List<Position> = emptyList()
     private var routeIndex: Int = 0
 
@@ -79,6 +75,7 @@ class RobotEngine(
     private suspend fun applySideEffects(cmd: Command, previous: RobotState) {
         when (cmd) {
             Command.START -> {
+                // START с пустым планом отклонён в command(), поэтому маршрут здесь всегда непуст.
                 val plan = currentPlan
                 sessionStartedAt = Instant.now()
                 sessionAreaAccum = 0.0
@@ -86,11 +83,7 @@ class RobotEngine(
                 error = null
                 route = planRoute(plan).map { Position(it.x, it.y) }
                 routeIndex = 0
-                if (route.isEmpty()) {
-                    onLog?.invoke("INFO", "План пуст, уборка случайным блужданием")
-                } else {
-                    onLog?.invoke("INFO", "Уборка по плану: зон ${plan?.zones?.size ?: 0}, клеток в маршруте ${route.size}")
-                }
+                onLog?.invoke("INFO", "Уборка по плану: зон ${plan?.zones?.size ?: 0}, клеток в маршруте ${route.size}")
             }
             Command.ABORT -> finishSession(aborted = true)
             Command.RETURN_HOME -> {
@@ -124,12 +117,7 @@ class RobotEngine(
     private suspend fun tickCleaning() {
         battery = (battery - 1).coerceAtLeast(0)
         sessionAreaAccum += 5.0
-        position = if (route.isEmpty()) {
-            progress = (progress + 0.02).coerceAtMost(1.0)
-            randomStep(position)
-        } else {
-            stepAlongRoute()
-        }
+        position = stepAlongRoute()
 
         when {
             battery <= 15 -> {
@@ -160,7 +148,7 @@ class RobotEngine(
         }
         // Клетка достигнута: progress = доля пройденных клеток маршрута.
         routeIndex++
-        progress = if (route.isEmpty()) 1.0 else routeIndex.toDouble() / route.size
+        progress = routeIndex.toDouble() / route.size
         return position
     }
 
@@ -184,12 +172,6 @@ class RobotEngine(
         if (battery < 100 && position == dockPosition) {
             battery = (battery + 1).coerceAtMost(100)
         }
-    }
-
-    private fun randomStep(from: Position): Position {
-        val nx = (from.x + Random.nextInt(-1, 2)).coerceIn(0, gridWidth - 1)
-        val ny = (from.y + Random.nextInt(-1, 2)).coerceIn(0, gridHeight - 1)
-        return Position(nx, ny)
     }
 
     private fun stepToward(from: Position, to: Position): Position {

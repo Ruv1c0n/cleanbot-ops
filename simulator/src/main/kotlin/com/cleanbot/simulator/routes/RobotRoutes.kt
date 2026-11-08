@@ -84,6 +84,13 @@ fun Route.robotRoutes(repo: FleetRepository) {
         put("/{id}/settings") {
             val id = call.parameters["id"]!!
             val body = call.receive<RobotSettings>()
+            // Иначе неаккуратный клиент перезаписал бы настройки чужого робота.
+            if (body.robotId != id) {
+                return@put call.respondText(
+                    "robotId в теле (${body.robotId}) не совпадает с id в пути ($id)",
+                    ContentType.Text.Plain, HttpStatusCode.BadRequest
+                )
+            }
             if (!repo.updateSettings(id, body)) return@put call.respond(HttpStatusCode.NotFound)
             call.respond(HttpStatusCode.OK)
         }
