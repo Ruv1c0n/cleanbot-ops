@@ -1,8 +1,13 @@
+import argparse
 import json
 import os
-from pathlib import Path
+import openai
 from dotenv import load_dotenv
 from openai import OpenAI
+
+# чистая контекстная логика вынесена в context.py (issue #15)
+from context import (SESSIONS_DIR, _session_path, estimate_tokens,
+                     ensure_context_budget, safe_path, search_docs)
 
 load_dotenv()
 
@@ -50,26 +55,60 @@ def chat(**kwargs):
         return client.chat.completions.create(model=active["model"], **kwargs)
 
 
-WORKSPACE = (Path(__file__).parent / "workspace").resolve()   # песочница
 # лимит шагов цикла
 MAX_STEPS = 8
 SYSTEM_PROMPT = (
     "Ты ассистент по проекту. Файлы проекта лежат в песочнице. "
     "Чтобы узнать содержимое, используй инструменты list_files и read_file. "
-    "Чтобы написать файл, используй write_file."
+    "Чтобы написать файл, используй write_file. "
+    "Чтобы найти факт в документации проекта, используй search_docs. "
     "Отвечай по-русски, кратко."
 )
 
 
+# ---------- шаг 1: сессия на диске ----------
+SESSION_ID = "default"
+STRATEGY = "trim"           # trim | summarize
+CONTEXT_BUDGET = 6000       # бюджет контекста в «условных токенах»
+
+
+def load_session(session_id: str, system_prompt: str) -> list:
+    """Загружает историю сессии. system в файл не сохраняется и кладётся
+    заново ровно один раз, поэтому дубля системного промпта не бывает."""
+    path = _session_path(session_id)
+    if not path.is_file():
+        return [{"role": "system", "content": system_prompt}]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [{"role": "system", "content": system_prompt}] + data
+
+
+def save_session(session_id: str, messages: list) -> None:
+    """Сохраняет историю без system (секретов из .env там нет и не появляется)."""
+    SESSIONS_DIR.mkdir(exist_ok=True)
+    data = [m for m in messages if m.get("role") != "system"]
+    _session_path(session_id).write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def summarize(dropped: list) -> str:
+    """Сжимает старый хвост отдельным коротким вызовом модели без tools."""
+    text = "\n".join(
+        f"{m['role']}: {m.get('content')}"
+        for m in dropped
+        if m.get("role") != "tool" and m.get("content")
+    )
+    resp = chat(messages=[
+        {"role": "system", "content":
+            "Сожми диалог в краткую память для агента. Ответь одной строкой "
+            "строго вида: [память диалога] Пользователя зовут … Ранее сделано: … "
+            "Открытые задачи: … Без вступлений и пояснений."},
+        {"role": "user", "content": text[:4000]},
+    ])
+    return resp.choices[0].message.content.strip()
+
+
 # ---------- инструменты ----------
-def safe_path(rel: str) -> Path:
-    # разворачивает '..' в настоящий путь
-    p = (WORKSPACE / rel).resolve()
-    if not p.is_relative_to(WORKSPACE):      # выход за песочницу запрещён
-        raise ValueError("путь вне песочницы")
-    return p
-
-
 def list_files(path: str = ".") -> str:
     p = safe_path(path)
     if not p.is_dir():
@@ -97,6 +136,7 @@ def write_file(path: str, content: str) -> str:
     return f"Файл {path} записан ({len(content)} символов)."
 
 
+# ---------- шаг 5: поиск по документам (search_docs в context.py) ----------
 TASKS_FILE = "tasks.json"          # лежит в workspace/
 PRIORITIES = ("low", "mid", "high")
 STATUSES = ("open", "done", "all")
@@ -157,6 +197,7 @@ def list_tasks(status: str = "open", priority: str = "") -> str:
 FUNCS = {"list_files": list_files,
          "read_file": read_file,
          "write_file": write_file,
+         "search_docs": search_docs,
          "add_task": add_task,
          "list_tasks": list_tasks, }
 
@@ -181,6 +222,14 @@ TOOLS = [
                            "path": {"type": "string", "description": "Путь к файлу, например 'TODO.md'"},
                            "content": {"type": "string", "description": "Полное содержимое файла"}},
                        "required": ["path", "content"]}}},
+    {"type": "function", "function": {
+        "name": "search_docs",
+        "description": "Поиск по документации проекта (workspace/docs): описание возможностей, REST API, телеметрия, FAQ. Вызывай, когда нужно найти факт о проекте.",
+        "parameters": {"type": "object",
+                       "properties": {
+                           "query": {"type": "string", "description": "Поисковый запрос, например 'приоритет задачи по умолчанию'"},
+                           "limit": {"type": "integer", "description": "Сколько фрагментов вернуть, 1-5, по умолчанию 3"}},
+                       "required": ["query"]}}},
     {
         "type": "function",
         "function": {
@@ -230,19 +279,43 @@ def execute_tool(name: str, raw_args: str) -> str:
         return f"ОШИБКА: {e}"
 
 
+def as_dict(msg) -> dict:
+    """assistant-сообщение -> dict без служебных полей (reasoning у
+    reasoning-моделей и т.п.), чтобы история оставалась валидной для API."""
+    d = {"role": msg.role, "content": msg.content or ""}
+    if msg.tool_calls:
+        d["tool_calls"] = [
+            {"id": c.id, "type": "function",
+             "function": {"name": c.function.name,
+                          "arguments": c.function.arguments}}
+            for c in msg.tool_calls
+        ]
+    return d
+
+
 # ---------- агентный цикл ----------
 def run_agent(messages: list) -> str:
+    """messages — полная история (для сессии); для запроса к API каждый раз
+    берём копию, обрезанную до бюджета."""
     for step in range(MAX_STEPS):
-        response = chat(messages=messages, tools=TOOLS)
+        req = ensure_context_budget(list(messages), CONTEXT_BUDGET, STRATEGY,
+                                    TOOLS, summarize_fn=summarize)
+        est = estimate_tokens(req, TOOLS)                # оценка до запроса
+        response = chat(messages=req, tools=TOOLS)
         choice = response.choices[0]
         msg = choice.message
-        print(f"[шаг {step}: model={response.model} in={response.usage.prompt_tokens} "
-              f"out={response.usage.completion_tokens} finish={choice.finish_reason}]")
+        usage = response.usage                      # у некоторых бэкендов usage=None
+        in_tok = usage.prompt_tokens if usage else "?"
+        out_tok = usage.completion_tokens if usage else "?"
+        print(f"[шаг {step}: model={response.model} оценка={est} "
+              f"in={in_tok} out={out_tok} "
+              f"finish={choice.finish_reason}]")
 
         # ответ ассистента сохраняем всегда
-        messages.append(msg.model_dump(exclude_none=True))
+        messages.append(as_dict(msg))
 
         if not msg.tool_calls:                               # инструментов нет: это итоговый ответ
+            save_session(SESSION_ID, messages)
             return msg.content
 
         for call in msg.tool_calls:
@@ -251,12 +324,27 @@ def run_agent(messages: list) -> str:
                 f"🔧 {call.function.name}({call.function.arguments}) -> {result[:200]}")
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": result})
+        save_session(SESSION_ID, messages)                   # шаг агента завершён — сохраняем
 
     return "Достигнут лимит шагов, задача не завершена."
 
 
 if __name__ == "__main__":
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    parser = argparse.ArgumentParser(description="Агент cleanbot-ops (лаб. 3)")
+    parser.add_argument("-s", "--session", default="default",
+                        help="id сессии: история хранится в agent/sessions/<id>.json")
+    parser.add_argument("--strategy", choices=("trim", "summarize"),
+                        default="trim",
+                        help="что делать со старым хвостом истории при превышении бюджета")
+    parser.add_argument("--budget", type=int, default=CONTEXT_BUDGET,
+                        help="бюджет контекста в условных токенах")
+    args = parser.parse_args()
+
+    SESSION_ID, STRATEGY, CONTEXT_BUDGET = args.session, args.strategy, args.budget
+
+    messages = load_session(SESSION_ID, SYSTEM_PROMPT)
+    if len(messages) > 1:
+        print(f"[сессия '{SESSION_ID}': загружено {len(messages) - 1} сообщений из прошлых запусков]")
     while True:
         user_input = input("\n> ").strip()
         if user_input in ("exit", "quit", "выход"):
@@ -265,3 +353,4 @@ if __name__ == "__main__":
             continue
         messages.append({"role": "user", "content": user_input})
         print("🤖", run_agent(messages))
+        save_session(SESSION_ID, messages)

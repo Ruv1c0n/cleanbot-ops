@@ -127,6 +127,47 @@ cleanbot-ops/
 | Android-эмулятор | `ws://10.0.2.2:8080` (`10.0.2.2` — loopback хост-машины) |
 | Физическое устройство | `ws://<IP-компьютера-в-той-же-сети>:8080` |
 
+## 🤖 Лабораторная 3: агент с контекстом и памятью
+
+CLI-агент (`agent/agent.py`) поверх OpenAI-совместимого API: инструменты (`list_files`,
+`read_file`, `write_file`, `search_docs`, `add_task`, `list_tasks`), персистентные сессии,
+бюджет контекста с усечением (trim) или суммаризацией старого хвоста, поиск по документации
+проекта и fallback на онлайн-модель, если локальная Ollama недоступна.
+
+**Запуск с нуля:**
+
+```bash
+cd agent
+python -m venv .venv
+.venv/Scripts/pip install -r requirements.txt   # Linux/macOS: .venv/bin/pip
+cp .env.example .env                            # заполнить ключи
+
+# локальная модель через Ollama (по умолчанию):
+ollama serve                                    # в отдельном терминале
+ollama pull gpt-oss:latest
+
+PYTHONIOENCODING=utf-8 .venv/Scripts/python agent.py --session mysession
+```
+
+**Флаги:**
+
+| Флаг | Что делает | По умолчанию |
+|---|---|---|
+| `--session <id>` | история диалога хранится в `agent/sessions/<id>.json` (переживает перезапуск) | `default` |
+| `--strategy trim\|summarize` | что делать со старым хвостом при превышении бюджета: удалять целиком или сжимать в «память диалога» | `trim` |
+| `--budget N` | бюджет контекста в «условных токенах» (`len/4` по сообщениям + tools) | `6000` |
+
+**Структура:**
+
+- `agent/sessions/` — файлы сессий `<id>.json` (в git не попадают);
+- `agent/workspace/` — песочница агента: `docs/` — корпус для `search_docs`, `tasks.json` — список задач;
+- `agent/LAB3.md` — отчёт по лабораторной (шаги, логи прогонов, наблюдения);
+- `agent/log_*.txt` — вшитые в отчёт логи сквозных прогонов;
+- переменные окружения: `BASE_URL`, `API_KEY`, `MODEL` — основная модель; `FALLBACK_BASE_URL`,
+  `FALLBACK_API_KEY`, `FALLBACK_MODEL` — запасная онлайн-модель (см. `.env.example`).
+
+Выход из агента — `exit`. Тесты контекстной логики: `cd agent && .venv/Scripts/python -m pytest test_agent.py`.
+
 ## 🗺 Roadmap
 
 **1 Этап**

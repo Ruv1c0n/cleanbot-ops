@@ -1,0 +1,19 @@
+$ PYTHONIOENCODING=utf-8 .venv/Scripts/python agent.py --session a3fb
+[модель: gpt-oss:latest @ http://localhost:11434/v1]
+
+> Запомни, пожалуйста: мой ник — Ruv1c0n.
+
+[driver: выполняю на хосте: taskkill /F /IM ollama.exe]
+SUCCESS: The process "ollama.exe" with PID 12948 has been terminated.
+[driver: rc=0]
+[локальная модель недоступна, переключаюсь на онлайн-модель]
+[шаг 0: model=cohere/north-mini-code:free оценка=777 in=616 out=248 finish=stop]
+🤖 Запомнил, твой ник — Ruv1c0n. Буду обращаться к тебе так при общении. 😊
+
+> Какой мой ник? Ответь одним предложением.
+[шаг 0: model=recursive/flint-v1.0:free оценка=823 in=966 out=94 finish=stop]
+🤖 Твой ник — Ruv1c0n.
+
+> exit
+
+[driver: процесс завершён, rc=0]
