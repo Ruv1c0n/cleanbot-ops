@@ -36,7 +36,9 @@ class FleetRepository(private val scope: CoroutineScope) {
         robots.forEach { robot ->
             schedules[robot.id] = defaultSchedule(robot.id)
             sessions[robot.id] = generateHistory(robot.id)
-            plans[robot.id] = defaultPlan(robot.id)
+            val plan = defaultPlan(robot.id)
+            plans[robot.id] = plan
+            robot.setPlan(plan)
             logs[robot.id] = ConcurrentLinkedDeque()
             settings[robot.id] = RobotSettings(robot.id, robot.name, "ws://10.0.2.2:8080")
 
@@ -74,6 +76,7 @@ class FleetRepository(private val scope: CoroutineScope) {
         val error = validatePlan(plan)
         if (error != null) return error
         plans[robotId] = plan
+        findRobot(robotId)?.setPlan(plan)
         appendLog(robotId, "INFO", "План уборки заменён: зон ${plan.zones.size}, клеток ${plan.zones.sumOf { it.cells.size }}")
         return null
     }
