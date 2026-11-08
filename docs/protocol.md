@@ -42,6 +42,11 @@
 | GET | `/robots/{id}/settings` | настройки робота |
 | PUT | `/robots/{id}/settings` | обновить настройки |
 
+> Параметры `from`/`to` у `GET /robots/{id}/sessions` — ISO-8601, оба опциональны.
+> Фильтр по времени **старта** сессии (`startedAt`), границы **включительные**:
+> `from <= startedAt <= to`. При невалидной дате сервер вернёт 500 (`Instant.parse`),
+> при неизвестном роботе — 404.
+
 ### Команды
 
 `POST /robots/{id}/commands`

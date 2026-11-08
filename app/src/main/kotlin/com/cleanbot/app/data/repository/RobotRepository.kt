@@ -100,7 +100,8 @@ class RobotRepository(
 
     suspend fun schedule(robotId: String): List<Schedule> = api.getSchedule(robotId)
     suspend fun updateSchedule(robotId: String, entries: List<Schedule>) = api.updateSchedule(robotId, entries)
-    suspend fun sessions(robotId: String): List<Session> = api.getSessions(robotId)
+    suspend fun sessions(robotId: String, from: String? = null, to: String? = null): List<Session> =
+        api.getSessions(robotId, from, to)
     suspend fun logs(robotId: String): List<LogEntry> = api.getLogs(robotId)
     suspend fun settings(robotId: String): RobotSettings = api.getSettings(robotId)
     suspend fun updateSettings(settings: RobotSettings) = api.updateSettings(settings)

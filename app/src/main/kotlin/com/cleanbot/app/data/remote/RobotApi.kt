@@ -10,6 +10,7 @@ import com.cleanbot.app.data.model.ScheduleUpdateRequest
 import com.cleanbot.app.data.model.Session
 import io.ktor.client.call.body
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
@@ -43,8 +44,12 @@ class RobotApi {
         }
     }
 
-    suspend fun getSessions(id: String): List<Session> =
-        client.get("$base/robots/$id/sessions").body()
+    /** from/to — ISO-8601, опциональны; фильтр по startedAt, границы включительно. */
+    suspend fun getSessions(id: String, from: String? = null, to: String? = null): List<Session> =
+        client.get("$base/robots/$id/sessions") {
+            from?.let { parameter("from", it) }
+            to?.let { parameter("to", it) }
+        }.body()
 
     suspend fun getLogs(id: String): List<LogEntry> =
         client.get("$base/robots/$id/logs").body()
