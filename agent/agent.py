@@ -78,7 +78,15 @@ def load_session(session_id: str, system_prompt: str) -> list:
     path = _session_path(session_id)
     if not path.is_file():
         return [{"role": "system", "content": system_prompt}]
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError("сессия не список сообщений")
+    except (json.JSONDecodeError, ValueError, OSError) as e:
+        # Битый/обрезанный файл сессии не должен ронять агент на старте —
+        # начинаем свежую историю, файл перезапишется при первом save_session.
+        print(f"⚠ Файл сессии {path.name} повреждён ({e}); начинаю новую историю.")
+        return [{"role": "system", "content": system_prompt}]
     return [{"role": "system", "content": system_prompt}] + data
 
 
@@ -316,7 +324,7 @@ def run_agent(messages: list) -> str:
 
         if not msg.tool_calls:                               # инструментов нет: это итоговый ответ
             save_session(SESSION_ID, messages)
-            return msg.content
+            return msg.content or ""   # content может быть None у некоторых бэкендов
 
         for call in msg.tool_calls:
             result = execute_tool(call.function.name, call.function.arguments)
