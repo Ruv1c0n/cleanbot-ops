@@ -16,7 +16,16 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 import com.cleanbot.app.data.remote.ServerConfig
+
+/** Период статистики; days == null — вся история. */
+enum class StatsPeriod(val label: String, val days: Int?) {
+    DAYS_7("7 дней", 7),
+    DAYS_30("30 дней", 30),
+    ALL("Всё", null)
+}
 
 class RobotDetailViewModel(
     private val robotId: String,
@@ -32,6 +41,15 @@ class RobotDetailViewModel(
 
     private val _sessions = MutableStateFlow<List<Session>>(emptyList())
     val sessions: StateFlow<List<Session>> = _sessions.asStateFlow()
+
+    private val _statsPeriod = MutableStateFlow(StatsPeriod.DAYS_7)
+    val statsPeriod: StateFlow<StatsPeriod> = _statsPeriod.asStateFlow()
+
+    private val _statsSessions = MutableStateFlow<List<Session>>(emptyList())
+    val statsSessions: StateFlow<List<Session>> = _statsSessions.asStateFlow()
+
+    private val _statsLoading = MutableStateFlow(false)
+    val statsLoading: StateFlow<Boolean> = _statsLoading.asStateFlow()
 
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs.asStateFlow()
@@ -66,6 +84,23 @@ class RobotDetailViewModel(
     fun loadSessions() {
         viewModelScope.launch {
             runCatching { repository.sessions(robotId) }.onSuccess { _sessions.value = it }
+        }
+    }
+
+    fun setStatsPeriod(period: StatsPeriod) {
+        _statsPeriod.value = period
+        loadStats()
+    }
+
+    fun loadStats() {
+        viewModelScope.launch {
+            _statsLoading.value = true
+            runCatching {
+                val days = _statsPeriod.value.days
+                val from = days?.let { Instant.now().minus(it.toLong(), ChronoUnit.DAYS) }
+                repository.sessions(robotId, from?.toString())
+            }.onSuccess { _statsSessions.value = it }
+            _statsLoading.value = false
         }
     }
 
