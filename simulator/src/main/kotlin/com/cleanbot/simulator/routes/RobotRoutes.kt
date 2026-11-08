@@ -44,6 +44,21 @@ fun Route.robotRoutes(repo: FleetRepository) {
             call.respond(HttpStatusCode.OK)
         }
 
+        get("/{id}/plan") {
+            val id = call.parameters["id"]!!
+            val plan = repo.getPlan(id) ?: return@get call.respond(HttpStatusCode.NotFound)
+            call.respond(plan)
+        }
+
+        put("/{id}/plan") {
+            val id = call.parameters["id"]!!
+            if (repo.findRobot(id) == null) return@put call.respond(HttpStatusCode.NotFound)
+            val body = call.receive<CleaningPlan>()
+            val error = repo.replacePlan(id, body)
+            if (error != null) return@put call.respondText(error, ContentType.Text.Plain, HttpStatusCode.BadRequest)
+            call.respond(HttpStatusCode.OK)
+        }
+
         get("/{id}/sessions") {
             val id = call.parameters["id"]!!
             val from = call.request.queryParameters["from"]?.let { Instant.parse(it) }
