@@ -21,12 +21,13 @@ data class Zone(
     val cells: List<Cell>
 )
 
-/** План уборки: сетка и список зон. */
+/** План уборки: сетка и список зон. route заполняет симулятор в GET /plan (порядок обхода «змейкой»); в PUT игнорируется. */
 @Serializable
 data class CleaningPlan(
     val gridW: Int,
     val gridH: Int,
-    val zones: List<Zone>
+    val zones: List<Zone>,
+    val route: List<Cell> = emptyList()
 )
 
 /** Телеметрия одного робота — пушится по WebSocket ~раз в секунду. */
