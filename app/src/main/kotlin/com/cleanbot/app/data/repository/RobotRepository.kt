@@ -159,7 +159,7 @@ class RobotRepository(
      * (та же политика, что и при старте приложения). CAS-гвард — чтобы соседние
      * батчи не запускали очистку одновременно.
      */
-    private fun maybeSweepTelemetry(dao: CleanBotDao) {
+    private suspend fun maybeSweepTelemetry(dao: CleanBotDao) {
         val now = System.currentTimeMillis()
         val last = lastRetentionSweep.get()
         if (now - last < TELEMETRY_SWEEP_INTERVAL_MS) return
