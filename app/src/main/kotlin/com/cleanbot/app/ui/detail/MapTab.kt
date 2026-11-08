@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -28,7 +29,7 @@ import com.cleanbot.app.data.model.CleaningPlan
 import com.cleanbot.app.ui.theme.ZoneColors
 
 @Composable
-fun MapTab(viewModel: RobotDetailViewModel) {
+fun MapTab(viewModel: RobotDetailViewModel, onEditPlan: () -> Unit) {
     val plan by viewModel.plan.collectAsStateWithLifecycle()
     val robot by viewModel.robot.collectAsStateWithLifecycle()
 
@@ -43,7 +44,6 @@ fun MapTab(viewModel: RobotDetailViewModel) {
         val p = plan
         when {
             p == null -> CircularProgressIndicator()
-            p.zones.isEmpty() -> Text("План пуст", style = MaterialTheme.typography.bodyMedium)
             else -> {
                 PlanMapView(
                     plan = p,
@@ -51,6 +51,9 @@ fun MapTab(viewModel: RobotDetailViewModel) {
                     modifier = Modifier.fillMaxWidth()
                 )
                 ZoneLegend(plan = p)
+                if (p.zones.isEmpty()) {
+                    Text("План пуст", style = MaterialTheme.typography.bodyMedium)
+                }
                 robot?.let { r ->
                     Text(
                         "Позиция: (${r.position.x}, ${r.position.y}) · Прогресс: ${(r.progress * 100).toInt()}%",
@@ -59,6 +62,7 @@ fun MapTab(viewModel: RobotDetailViewModel) {
                 }
             }
         }
+        Button(onClick = onEditPlan) { Text("Редактировать") }
     }
 }
 
