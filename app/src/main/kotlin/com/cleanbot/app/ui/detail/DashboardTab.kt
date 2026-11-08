@@ -16,11 +16,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cleanbot.app.di.AppContainer
 import com.cleanbot.app.ui.components.ErrorBadge
 import com.cleanbot.app.ui.components.StateBadge
 
@@ -28,7 +33,31 @@ import com.cleanbot.app.ui.components.StateBadge
 fun DashboardTab(viewModel: RobotDetailViewModel) {
     val robot by viewModel.robot.collectAsStateWithLifecycle()
     val lastError by viewModel.lastError.collectAsStateWithLifecycle()
+    val plan by viewModel.plan.collectAsStateWithLifecycle()
     val r = robot
+
+    // План нужен предпросмотру; тянем его и здесь, а не только в MapTab.
+    LaunchedEffect(Unit) { viewModel.loadPlan() }
+
+    // Предпросмотр перед стартом: показывается по настройке (in-memory), иначе Старт уходит сразу.
+    var showPreview by remember { mutableStateOf(false) }
+    var showEveryTime by remember { mutableStateOf(AppContainer.showPlanPreviewEveryTime) }
+
+    if (showPreview) {
+        PlanPreviewSheet(
+            plan = plan,
+            showEveryTime = showEveryTime,
+            onShowEveryTimeChange = {
+                showEveryTime = it
+                AppContainer.showPlanPreviewEveryTime = it
+            },
+            onDismiss = { showPreview = false },
+            onStart = {
+                showPreview = false
+                viewModel.sendCommand("START")
+            }
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -70,7 +99,17 @@ fun DashboardTab(viewModel: RobotDetailViewModel) {
 
         Spacer(Modifier.height(4.dp))
         Text("Команды", style = MaterialTheme.typography.titleMedium)
-        CommandButtons(state = r.state, onCommand = viewModel::sendCommand)
+        CommandButtons(
+            state = r.state,
+            onCommand = { command ->
+                if (command == "START" && showEveryTime) {
+                    viewModel.loadPlan()   // свежий план с маршрутом для предпросмотра
+                    showPreview = true
+                } else {
+                    viewModel.sendCommand(command)
+                }
+            }
+        )
     }
 }
 

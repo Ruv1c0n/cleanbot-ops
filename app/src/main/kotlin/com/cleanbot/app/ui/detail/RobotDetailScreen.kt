@@ -24,11 +24,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 
-private val tabs = listOf("Дашборд", "Расписание", "Сессии", "Инженерное")
+private val tabs = listOf("Дашборд", "Карта", "Расписание", "Сессии", "Статистика", "Инженерное")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RobotDetailScreen(robotId: String, onBack: () -> Unit) {
+fun RobotDetailScreen(robotId: String, onBack: () -> Unit, onEditPlan: () -> Unit = {}) {
     val viewModel: RobotDetailViewModel = viewModel(
         factory = viewModelFactory {
             initializer { RobotDetailViewModel(robotId) }
@@ -62,9 +62,11 @@ fun RobotDetailScreen(robotId: String, onBack: () -> Unit) {
             }
             when (selectedTab) {
                 0 -> DashboardTab(viewModel)
-                1 -> ScheduleTab(viewModel, robotId)
-                2 -> SessionsTab(viewModel)
-                3 -> EngineeringTab(viewModel)
+                1 -> MapTab(viewModel, onEditPlan)
+                2 -> ScheduleTab(viewModel, robotId)
+                3 -> SessionsTab(viewModel)
+                4 -> StatsTab(viewModel)
+                5 -> EngineeringTab(viewModel)
             }
         }
     }

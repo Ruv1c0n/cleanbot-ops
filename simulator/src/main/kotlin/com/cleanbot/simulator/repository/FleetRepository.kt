@@ -27,6 +27,7 @@ class FleetRepository(private val scope: CoroutineScope) {
     private val sessions = ConcurrentHashMap<String, MutableList<Session>>()
     private val logs = ConcurrentHashMap<String, ConcurrentLinkedDeque<LogEntry>>()
     private val settings = ConcurrentHashMap<String, RobotSettings>()
+    private val plans = ConcurrentHashMap<String, CleaningPlan>()
 
     /** Транслирует срез телеметрии по всем роботам разом, раз в секунду. */
     val telemetryFlow = MutableSharedFlow<List<Telemetry>>(replay = 1)
@@ -35,6 +36,9 @@ class FleetRepository(private val scope: CoroutineScope) {
         robots.forEach { robot ->
             schedules[robot.id] = defaultSchedule(robot.id)
             sessions[robot.id] = generateHistory(robot.id)
+            val plan = defaultPlan(robot.id)
+            plans[robot.id] = plan
+            robot.setPlan(plan)
             logs[robot.id] = ConcurrentLinkedDeque()
             settings[robot.id] = RobotSettings(robot.id, robot.name, "ws://10.0.2.2:8080")
 
@@ -62,6 +66,19 @@ class FleetRepository(private val scope: CoroutineScope) {
         if (!schedules.containsKey(robotId)) return false
         schedules[robotId] = entries.toMutableList()
         return true
+    }
+
+    fun getPlan(robotId: String): CleaningPlan? = plans[robotId]
+
+    /** Заменяет план целиком. Возвращает null при успехе или текст ошибки валидации. */
+    fun replacePlan(robotId: String, plan: CleaningPlan): String? {
+        if (!plans.containsKey(robotId)) return "Неизвестный робот: $robotId"
+        val error = validatePlan(plan)
+        if (error != null) return error
+        plans[robotId] = plan
+        findRobot(robotId)?.setPlan(plan)
+        appendLog(robotId, "INFO", "План уборки заменён: зон ${plan.zones.size}, клеток ${plan.zones.sumOf { it.cells.size }}")
+        return null
     }
 
     fun getSessions(robotId: String, from: Instant?, to: Instant?): List<Session>? {
@@ -132,6 +149,22 @@ class FleetRepository(private val scope: CoroutineScope) {
         Schedule(UUID.randomUUID().toString(), robotId, 5, "22:00", "dry_sweep")
     )
 
+    /** Дефолтный план: 3 зоны; для разных роботов немного сдвинут по x, чтобы планы отличались. */
+    private fun defaultPlan(robotId: String): CleaningPlan {
+        val shiftX = robots.indexOfFirst { it.id == robotId }.coerceAtLeast(0) * 2
+        fun rect(x1: Int, x2: Int, y1: Int, y2: Int): List<Cell> =
+            (y1..y2).flatMap { y -> (x1..x2).map { x -> Cell(x + shiftX, y) } }
+        return CleaningPlan(
+            gridW = GRID_WIDTH,
+            gridH = GRID_HEIGHT,
+            zones = listOf(
+                Zone(1, "Гостиная", rect(1, 6, 1, 3)),
+                Zone(2, "Спальня", rect(9, 12, 4, 7)),
+                Zone(3, "Кухня", rect(2, 4, 9, 11))
+            )
+        )
+    }
+
     /** ~40 прошлых сессий за последний месяц — для экрана статистики. */
     private fun generateHistory(robotId: String): MutableList<Session> {
         val now = Instant.now()
@@ -155,4 +188,25 @@ class FleetRepository(private val scope: CoroutineScope) {
         }
         return list
     }
+}
+
+/**
+ * Валидация плана: сетка строго 20×14, клетки в границах, без дублей, зона ≥ 1 клетки.
+ * Возвращает текст ошибки или null, если план корректен.
+ */
+fun validatePlan(plan: CleaningPlan): String? {
+    if (plan.gridW != GRID_WIDTH || plan.gridH != GRID_HEIGHT) {
+        return "Сетка плана должна быть $GRID_WIDTH×$GRID_HEIGHT, получено ${plan.gridW}×${plan.gridH}"
+    }
+    val seen = mutableSetOf<Cell>()
+    plan.zones.forEachIndexed { index, zone ->
+        if (zone.cells.isEmpty()) return "Зона «${zone.name}» (#$index) должна содержать хотя бы одну клетку"
+        for (cell in zone.cells) {
+            if (cell.x !in 0 until GRID_WIDTH || cell.y !in 0 until GRID_HEIGHT) {
+                return "Клетка (${cell.x}, ${cell.y}) вне сетки $GRID_WIDTH×$GRID_HEIGHT"
+            }
+            if (!seen.add(cell)) return "Дублирующаяся клетка (${cell.x}, ${cell.y})"
+        }
+    }
+    return null
 }

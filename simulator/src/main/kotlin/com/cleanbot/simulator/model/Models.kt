@@ -2,8 +2,33 @@ package com.cleanbot.simulator.model
 
 import kotlinx.serialization.Serializable
 
+/** Фиксированная сетка мира; координаты телеметрии position маппятся 1:1 на клетку. */
+const val GRID_WIDTH = 20
+const val GRID_HEIGHT = 14
+
 @Serializable
 data class Position(val x: Int, val y: Int)
+
+/** Клетка сетки плана уборки. */
+@Serializable
+data class Cell(val x: Int, val y: Int)
+
+/** Зона уборки — набор клеток внутри сетки плана. */
+@Serializable
+data class Zone(
+    val id: Int,
+    val name: String,
+    val cells: List<Cell>
+)
+
+/** План уборки: сетка и список зон. route заполняет симулятор в GET /plan (порядок обхода «змейкой»); в PUT игнорируется. */
+@Serializable
+data class CleaningPlan(
+    val gridW: Int,
+    val gridH: Int,
+    val zones: List<Zone>,
+    val route: List<Cell> = emptyList()
+)
 
 /** Телеметрия одного робота — пушится по WebSocket ~раз в секунду. */
 @Serializable

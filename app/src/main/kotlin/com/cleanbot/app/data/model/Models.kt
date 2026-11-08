@@ -5,6 +5,28 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class Position(val x: Int, val y: Int)
 
+/** Клетка сетки плана уборки. */
+@Serializable
+data class Cell(val x: Int, val y: Int)
+
+/** Зона уборки — набор клеток внутри сетки плана. */
+@Serializable
+data class Zone(
+    val id: Int,
+    val name: String,
+    val cells: List<Cell>
+)
+
+/** План уборки: сетка и список зон. */
+@Serializable
+data class CleaningPlan(
+    val gridW: Int,
+    val gridH: Int,
+    val zones: List<Zone>,
+    /** Планируемая траектория «змейкой», приходит из GET /plan; используется предпросмотром. */
+    val route: List<Cell> = emptyList()
+)
+
 @Serializable
 data class Telemetry(
     val robotId: String,

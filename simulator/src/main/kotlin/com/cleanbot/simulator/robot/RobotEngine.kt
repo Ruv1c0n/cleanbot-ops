@@ -1,6 +1,9 @@
 package com.cleanbot.simulator.robot
 
+import com.cleanbot.simulator.model.CleaningPlan
 import com.cleanbot.simulator.model.CommandResponse
+import com.cleanbot.simulator.model.GRID_HEIGHT
+import com.cleanbot.simulator.model.GRID_WIDTH
 import com.cleanbot.simulator.model.Position
 import com.cleanbot.simulator.model.RobotSummary
 import com.cleanbot.simulator.model.Telemetry
@@ -17,8 +20,8 @@ import kotlin.random.Random
 class RobotEngine(
     val id: String,
     @Volatile var name: String,
-    private val gridWidth: Int = 24,
-    private val gridHeight: Int = 12,
+    private val gridWidth: Int = GRID_WIDTH,
+    private val gridHeight: Int = GRID_HEIGHT,
     private val dockPosition: Position = Position(0, 0),
     private val faultChance: Double = 0.01
 ) {
@@ -34,10 +37,30 @@ class RobotEngine(
     private var sessionStartedAt: Instant? = null
     private var sessionAreaAccum: Double = 0.0
 
+    /** Маршрут текущей уборки: клетки зон плана «змейкой», зона за зоной. null — идёт случайное блуждание. */
+    private var route: List<Position> = emptyList()
+    private var routeIndex: Int = 0
+
     var onSessionFinished: (suspend (startedAt: Instant, endedAt: Instant, area: Double, mode: String, aborted: Boolean) -> Unit)? = null
     var onLog: (suspend (level: String, message: String) -> Unit)? = null
 
+    /** Текущий план уборки; назначается репозиторием, применяется при следующем START. */
+    @Volatile
+    private var currentPlan: CleaningPlan? = null
+
+    /** Назначает план уборки; применяется при следующем START. */
+    fun setPlan(plan: CleaningPlan) {
+        currentPlan = plan
+    }
+
     suspend fun command(cmd: Command, requestId: String): CommandResponse = mutex.withLock {
+        // Пустой план не даёт запустить уборку: предпросмотр в app блокирует Старт,
+        // здесь дублируем отклонением, чтобы неаккуратный клиент не начал блуждание.
+        val planNow = currentPlan
+        if (cmd == Command.START && (planNow == null || planNow.zones.all { it.cells.isEmpty() })) {
+            onLog?.invoke("WARN", "Команда START отклонена: план не задан")
+            return@withLock CommandResponse(accepted = false, requestId = requestId, reason = "План не задан")
+        }
         when (val result = RobotFsm.applyCommand(state, cmd)) {
             is TransitionResult.Rejected -> {
                 onLog?.invoke("WARN", "Команда $cmd отклонена в состоянии $state")
@@ -56,10 +79,18 @@ class RobotEngine(
     private suspend fun applySideEffects(cmd: Command, previous: RobotState) {
         when (cmd) {
             Command.START -> {
+                val plan = currentPlan
                 sessionStartedAt = Instant.now()
                 sessionAreaAccum = 0.0
                 progress = 0.0
                 error = null
+                route = planRoute(plan).map { Position(it.x, it.y) }
+                routeIndex = 0
+                if (route.isEmpty()) {
+                    onLog?.invoke("INFO", "План пуст, уборка случайным блужданием")
+                } else {
+                    onLog?.invoke("INFO", "Уборка по плану: зон ${plan?.zones?.size ?: 0}, клеток в маршруте ${route.size}")
+                }
             }
             Command.ABORT -> finishSession(aborted = true)
             Command.RETURN_HOME -> {
@@ -92,9 +123,13 @@ class RobotEngine(
 
     private suspend fun tickCleaning() {
         battery = (battery - 1).coerceAtLeast(0)
-        progress = (progress + 0.02).coerceAtMost(1.0)
         sessionAreaAccum += 5.0
-        position = randomStep(position)
+        position = if (route.isEmpty()) {
+            progress = (progress + 0.02).coerceAtMost(1.0)
+            randomStep(position)
+        } else {
+            stepAlongRoute()
+        }
 
         when {
             battery <= 15 -> {
@@ -114,6 +149,19 @@ class RobotEngine(
                 state = RobotFsm.fault(state)
             }
         }
+    }
+
+    /** Один шаг к очередной клетке маршрута; по достижении — переход к следующей, progress растёт. */
+    private fun stepAlongRoute(): Position {
+        if (routeIndex >= route.size) return position
+        val target = route[routeIndex]
+        if (position != target) {
+            return stepToward(position, target)
+        }
+        // Клетка достигнута: progress = доля пройденных клеток маршрута.
+        routeIndex++
+        progress = if (route.isEmpty()) 1.0 else routeIndex.toDouble() / route.size
+        return position
     }
 
     private suspend fun tickReturning() {

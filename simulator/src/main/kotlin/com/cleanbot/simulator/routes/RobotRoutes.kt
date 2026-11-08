@@ -2,6 +2,7 @@ package com.cleanbot.simulator.routes
 
 import com.cleanbot.simulator.model.*
 import com.cleanbot.simulator.repository.FleetRepository
+import com.cleanbot.simulator.robot.planRoute
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
@@ -41,6 +42,22 @@ fun Route.robotRoutes(repo: FleetRepository) {
             val id = call.parameters["id"]!!
             val body = call.receive<ScheduleUpdateRequest>()
             if (!repo.replaceSchedule(id, body.entries)) return@put call.respond(HttpStatusCode.NotFound)
+            call.respond(HttpStatusCode.OK)
+        }
+
+        get("/{id}/plan") {
+            val id = call.parameters["id"]!!
+            val plan = repo.getPlan(id) ?: return@get call.respond(HttpStatusCode.NotFound)
+            // Маршрут всегда пересчитывается: предпросмотр в app честный — показанный маршрут = фактический.
+            call.respond(plan.copy(route = planRoute(plan)))
+        }
+
+        put("/{id}/plan") {
+            val id = call.parameters["id"]!!
+            if (repo.findRobot(id) == null) return@put call.respond(HttpStatusCode.NotFound)
+            val body = call.receive<CleaningPlan>()
+            val error = repo.replacePlan(id, body)
+            if (error != null) return@put call.respondText(error, ContentType.Text.Plain, HttpStatusCode.BadRequest)
             call.respond(HttpStatusCode.OK)
         }
 
