@@ -46,11 +46,17 @@ class RobotDetailViewModel(
     private val _sessions = MutableStateFlow<List<Session>>(emptyList())
     val sessions: StateFlow<List<Session>> = _sessions.asStateFlow()
 
+    private val _sessionsFromCache = MutableStateFlow(false)
+    val sessionsFromCache: StateFlow<Boolean> = _sessionsFromCache.asStateFlow()
+
     private val _statsPeriod = MutableStateFlow(StatsPeriod.DAYS_7)
     val statsPeriod: StateFlow<StatsPeriod> = _statsPeriod.asStateFlow()
 
     private val _statsSessions = MutableStateFlow<List<Session>>(emptyList())
     val statsSessions: StateFlow<List<Session>> = _statsSessions.asStateFlow()
+
+    private val _statsFromCache = MutableStateFlow(false)
+    val statsFromCache: StateFlow<Boolean> = _statsFromCache.asStateFlow()
 
     private val _statsLoading = MutableStateFlow(false)
     val statsLoading: StateFlow<Boolean> = _statsLoading.asStateFlow()
@@ -87,7 +93,10 @@ class RobotDetailViewModel(
 
     fun loadSessions() {
         viewModelScope.launch {
-            runCatching { repository.sessions(robotId) }.onSuccess { _sessions.value = it }
+            runCatching { repository.sessions(robotId) }.onSuccess { result ->
+                _sessions.value = result.sessions
+                _sessionsFromCache.value = result.fromCache
+            }
         }
     }
 
@@ -102,14 +111,35 @@ class RobotDetailViewModel(
         loadStats()
     }
 
+    /**
+     * Статистика за период: Room-кэш + догрузка из сети.
+     * Сначала мгновенно показываем кэш, затем сеть; недостающее в сетевом ответе
+     * дополняем из кэша (по startedAt), ошибки сети оставляют кэш с пометкой «офлайн».
+     */
     fun loadStats() {
         viewModelScope.launch {
             _statsLoading.value = true
-            runCatching {
-                val days = _statsPeriod.value.days
-                val from = days?.let { Instant.now().minus(it.toLong(), ChronoUnit.DAYS) }
-                repository.sessions(robotId, from?.toString())
-            }.onSuccess { _statsSessions.value = it }
+            val from = _statsPeriod.value.days
+                ?.let { Instant.now().minus(it.toLong(), ChronoUnit.DAYS).toString() }
+            val cached = runCatching { repository.cachedSessions(robotId, from, null) }
+                .getOrDefault(emptyList())
+            if (_statsSessions.value.isEmpty()) {
+                _statsSessions.value = cached
+                _statsFromCache.value = cached.isNotEmpty()
+            }
+            runCatching { repository.sessions(robotId, from, null) }.onSuccess { result ->
+                if (result.fromCache) {
+                    // Сеть недоступна: остаются офлайн-данные из кэша
+                    _statsSessions.value = result.sessions
+                    _statsFromCache.value = result.sessions.isNotEmpty()
+                } else {
+                    // Сеть успешна: догружаем из кэша то, чего нет в ответе
+                    val networkStarted = result.sessions.map { it.startedAt }.toSet()
+                    val topUp = cached.filter { it.startedAt !in networkStarted }
+                    _statsSessions.value = result.sessions + topUp
+                    _statsFromCache.value = false
+                }
+            }
             _statsLoading.value = false
         }
     }

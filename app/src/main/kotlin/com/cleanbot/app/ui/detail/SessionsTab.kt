@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -22,10 +23,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @Composable
 fun SessionsTab(viewModel: RobotDetailViewModel) {
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val fromCache by viewModel.sessionsFromCache.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadSessions() }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        if (fromCache) {
+            OfflineBanner()
+            Spacer(Modifier.height(12.dp))
+        }
         if (sessions.isNotEmpty()) {
             val totalArea = sessions.sumOf { it.areaCleaned }
             val avgDuration = sessions.map { it.durationMinutes }.average().toInt()
@@ -50,5 +56,22 @@ fun SessionsTab(viewModel: RobotDetailViewModel) {
                 }
             }
         }
+    }
+}
+
+/** Метка «офлайн-данные»: список показан из локального кэша Room. */
+@Composable
+fun OfflineBanner(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Text(
+            "Офлайн-данные (из локального кэша)",
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
