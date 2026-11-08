@@ -1,5 +1,6 @@
 package com.cleanbot.app.data.remote
 
+import com.cleanbot.app.data.model.CleaningPlan
 import com.cleanbot.app.data.model.CommandRequest
 import com.cleanbot.app.data.model.CommandResponse
 import com.cleanbot.app.data.model.LogEntry
@@ -41,6 +42,16 @@ class RobotApi {
         client.put("$base/robots/$id/schedules") {
             contentType(ContentType.Application.Json)
             setBody(ScheduleUpdateRequest(entries))
+        }
+    }
+
+    suspend fun getPlan(id: String): CleaningPlan =
+        client.get("$base/robots/$id/plan").body()
+
+    suspend fun updatePlan(id: String, plan: CleaningPlan) {
+        client.put("$base/robots/$id/plan") {
+            contentType(ContentType.Application.Json)
+            setBody(plan)
         }
     }
 

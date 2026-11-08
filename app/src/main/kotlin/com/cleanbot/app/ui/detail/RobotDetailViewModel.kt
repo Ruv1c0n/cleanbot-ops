@@ -2,6 +2,7 @@ package com.cleanbot.app.ui.detail
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.cleanbot.app.data.model.CleaningPlan
 import com.cleanbot.app.data.model.LogEntry
 import com.cleanbot.app.data.model.RobotSettings
 import com.cleanbot.app.data.model.Schedule
@@ -38,6 +39,9 @@ class RobotDetailViewModel(
 
     private val _schedule = MutableStateFlow<List<Schedule>>(emptyList())
     val schedule: StateFlow<List<Schedule>> = _schedule.asStateFlow()
+
+    private val _plan = MutableStateFlow<CleaningPlan?>(null)
+    val plan: StateFlow<CleaningPlan?> = _plan.asStateFlow()
 
     private val _sessions = MutableStateFlow<List<Session>>(emptyList())
     val sessions: StateFlow<List<Session>> = _sessions.asStateFlow()
@@ -84,6 +88,12 @@ class RobotDetailViewModel(
     fun loadSessions() {
         viewModelScope.launch {
             runCatching { repository.sessions(robotId) }.onSuccess { _sessions.value = it }
+        }
+    }
+
+    fun loadPlan() {
+        viewModelScope.launch {
+            runCatching { repository.plan(robotId) }.onSuccess { _plan.value = it }
         }
     }
 
