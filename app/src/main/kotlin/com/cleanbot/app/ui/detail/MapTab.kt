@@ -63,7 +63,8 @@ fun MapTab(viewModel: RobotDetailViewModel) {
 }
 
 @Composable
-private fun ZoneLegend(plan: CleaningPlan) {
+// internal по пакету: переиспользуется в предпросмотре плана (PlanPreviewSheet)
+fun ZoneLegend(plan: CleaningPlan) {
     Row(
         modifier = Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(12.dp),

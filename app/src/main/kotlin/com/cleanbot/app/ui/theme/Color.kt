@@ -24,3 +24,6 @@ val MapBackground = Color(0xFFECEFF1)
 
 /** Маркер робота. */
 val RobotMarker = Color(0xFF37474F)
+
+/** Планируемая траектория (пунктир) на карте плана. */
+val MapRoute = Color(0xFFD84315)

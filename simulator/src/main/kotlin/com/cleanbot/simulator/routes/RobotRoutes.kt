@@ -2,6 +2,7 @@ package com.cleanbot.simulator.routes
 
 import com.cleanbot.simulator.model.*
 import com.cleanbot.simulator.repository.FleetRepository
+import com.cleanbot.simulator.robot.planRoute
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
@@ -47,7 +48,8 @@ fun Route.robotRoutes(repo: FleetRepository) {
         get("/{id}/plan") {
             val id = call.parameters["id"]!!
             val plan = repo.getPlan(id) ?: return@get call.respond(HttpStatusCode.NotFound)
-            call.respond(plan)
+            // Маршрут всегда пересчитывается: предпросмотр в app честный — показанный маршрут = фактический.
+            call.respond(plan.copy(route = planRoute(plan)))
         }
 
         put("/{id}/plan") {

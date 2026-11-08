@@ -22,7 +22,9 @@ data class Zone(
 data class CleaningPlan(
     val gridW: Int,
     val gridH: Int,
-    val zones: List<Zone>
+    val zones: List<Zone>,
+    /** Планируемая траектория «змейкой», приходит из GET /plan; используется предпросмотром. */
+    val route: List<Cell> = emptyList()
 )
 
 @Serializable

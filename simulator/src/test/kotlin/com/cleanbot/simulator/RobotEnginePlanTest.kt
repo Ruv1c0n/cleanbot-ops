@@ -90,14 +90,25 @@ class RobotEnginePlanTest {
     }
 
     @Test
-    fun `empty plan falls back to random walk and finishes`() = runBlocking {
+    fun `empty plan rejects START and stays idle`() = runBlocking {
         val plan = CleaningPlan(GRID_WIDTH, GRID_HEIGHT, emptyList())
         val engine = engineWithPlan(plan)
 
-        assertTrue(engine.command(Command.START, "r1").accepted)
-        engine.tickUntilDone()
+        val response = engine.command(Command.START, "r1")
 
-        assertTrue(engine.snapshot().progress >= 1.0, "случайное блуждание должно довести progress до 1.0")
+        assertTrue(!response.accepted, "пустой план не должен допускать запуск уборки")
+        assertEquals("План не задан", response.reason)
+        assertEquals(RobotState.IDLE.name, engine.snapshot().state, "робот должен остаться в IDLE")
+    }
+
+    @Test
+    fun `plan without cells rejects START`() = runBlocking {
+        val plan = CleaningPlan(GRID_WIDTH, GRID_HEIGHT, listOf(Zone(1, "Пустая зона", emptyList())))
+        val engine = engineWithPlan(plan)
+
+        val response = engine.command(Command.START, "r1")
+
+        assertTrue(!response.accepted, "план без клеток не должен допускать запуск уборки")
     }
 
     @Test

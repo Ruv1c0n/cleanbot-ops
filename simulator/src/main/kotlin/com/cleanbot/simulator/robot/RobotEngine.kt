@@ -54,6 +54,13 @@ class RobotEngine(
     }
 
     suspend fun command(cmd: Command, requestId: String): CommandResponse = mutex.withLock {
+        // Пустой план не даёт запустить уборку: предпросмотр в app блокирует Старт,
+        // здесь дублируем отклонением, чтобы неаккуратный клиент не начал блуждание.
+        val planNow = currentPlan
+        if (cmd == Command.START && (planNow == null || planNow.zones.all { it.cells.isEmpty() })) {
+            onLog?.invoke("WARN", "Команда START отклонена: план не задан")
+            return@withLock CommandResponse(accepted = false, requestId = requestId, reason = "План не задан")
+        }
         when (val result = RobotFsm.applyCommand(state, cmd)) {
             is TransitionResult.Rejected -> {
                 onLog?.invoke("WARN", "Команда $cmd отклонена в состоянии $state")
@@ -77,12 +84,12 @@ class RobotEngine(
                 sessionAreaAccum = 0.0
                 progress = 0.0
                 error = null
-                route = buildRoute(plan)
+                route = planRoute(plan).map { Position(it.x, it.y) }
                 routeIndex = 0
-                if (plan == null || route.isEmpty()) {
+                if (route.isEmpty()) {
                     onLog?.invoke("INFO", "План пуст, уборка случайным блужданием")
                 } else {
-                    onLog?.invoke("INFO", "Уборка по плану: зон ${plan.zones.size}, клеток в маршруте ${route.size}")
+                    onLog?.invoke("INFO", "Уборка по плану: зон ${plan?.zones?.size ?: 0}, клеток в маршруте ${route.size}")
                 }
             }
             Command.ABORT -> finishSession(aborted = true)
@@ -93,24 +100,6 @@ class RobotEngine(
             }
             Command.RESET -> error = null
             else -> Unit
-        }
-    }
-
-    /**
-     * Маршрут «змейкой» по клеткам зон плана, зона за зоной: в зоне клетки сортируются
-     * по строкам (y), направление обхода строк чередуется. Пустой план → пустой маршрут.
-     */
-    private fun buildRoute(plan: CleaningPlan?): List<Position> {
-        if (plan == null) return emptyList()
-        return plan.zones.flatMap { zone ->
-            zone.cells
-                .sortedWith(compareBy({ it.y }, { it.x }))
-                .groupBy { it.y }
-                .toSortedMap()
-                .entries.flatMapIndexed { rowIndex, (_, rowCells) ->
-                    val ordered = if (rowIndex % 2 == 0) rowCells else rowCells.reversed()
-                    ordered.map { Position(it.x, it.y) }
-                }
         }
     }
 
