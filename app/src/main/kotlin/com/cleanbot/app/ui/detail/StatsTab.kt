@@ -32,6 +32,7 @@ fun StatsTab(viewModel: RobotDetailViewModel) {
     val sessions by viewModel.statsSessions.collectAsStateWithLifecycle()
     val period by viewModel.statsPeriod.collectAsStateWithLifecycle()
     val loading by viewModel.statsLoading.collectAsStateWithLifecycle()
+    val fromCache by viewModel.statsFromCache.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadStats() }
 
@@ -46,6 +47,10 @@ fun StatsTab(viewModel: RobotDetailViewModel) {
             }
         }
         Spacer(Modifier.height(12.dp))
+        if (fromCache) {
+            OfflineBanner()
+            Spacer(Modifier.height(12.dp))
+        }
 
         if (loading) {
             CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
