@@ -15,8 +15,10 @@ import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 
 class RobotApi {
 
@@ -48,11 +50,15 @@ class RobotApi {
     suspend fun getPlan(id: String): CleaningPlan =
         client.get("$base/robots/$id/plan").body()
 
-    suspend fun updatePlan(id: String, plan: CleaningPlan) {
-        client.put("$base/robots/$id/plan") {
+    /** PUT /plan: возвращает null при успехе или текст ошибки валидации из 400. */
+    suspend fun updatePlan(id: String, plan: CleaningPlan): String? {
+        val response = client.put("$base/robots/$id/plan") {
             contentType(ContentType.Application.Json)
             setBody(plan)
         }
+        if (response.status.isSuccess()) return null
+        return runCatching { response.bodyAsText() }.getOrNull()
+            ?: "Ошибка сохранения плана (${response.status.value})"
     }
 
     /** from/to — ISO-8601, опциональны; фильтр по startedAt, границы включительно. */
