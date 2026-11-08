@@ -21,7 +21,9 @@ import java.time.Duration
 import io.ktor.server.http.content.staticResources
 
 fun main() {
-    embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
+    // Порт по умолчанию — 8080; можно переопределить переменной окружения SIMULATOR_PORT
+    val port = System.getenv("SIMULATOR_PORT")?.toIntOrNull() ?: 8080
+    embeddedServer(Netty, port = port, host = "0.0.0.0", module = Application::module)
         .start(wait = true)
 }
 
