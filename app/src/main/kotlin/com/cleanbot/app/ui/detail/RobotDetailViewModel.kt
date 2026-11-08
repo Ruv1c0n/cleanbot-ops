@@ -158,10 +158,17 @@ class RobotDetailViewModel(
 
     fun saveSettings(newSettings: RobotSettings, hostPort: String) {
         viewModelScope.launch {
-            runCatching { repository.updateSettings(newSettings) }   // пока адрес ещё старый
-            ServerConfig.hostPort.value = hostPort
-            repository.refreshFleet()
-            _settings.value = newSettings
+            // PUT уходит на ещё действующий адрес; сам адрес сервера и локальные
+            // настройки меняем только при успехе, иначе «сохранение» было бы ложью.
+            runCatching { repository.updateSettings(newSettings) }
+                .onSuccess {
+                    ServerConfig.hostPort.value = hostPort
+                    repository.refreshFleet()
+                    _settings.value = newSettings
+                }
+                .onFailure {
+                    _lastError.value = "Настройки не сохранены: ${it.message ?: "нет связи с сервером"}"
+                }
         }
     }
 

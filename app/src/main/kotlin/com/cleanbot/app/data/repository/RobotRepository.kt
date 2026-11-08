@@ -1,6 +1,7 @@
 package com.cleanbot.app.data.repository
 
 import android.util.Log
+import com.cleanbot.app.data.local.CleanBotDao
 import com.cleanbot.app.data.local.CleanBotDatabase
 import com.cleanbot.app.data.local.SessionEntity
 import com.cleanbot.app.data.local.TelemetryEntity
@@ -26,6 +27,7 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import com.cleanbot.app.data.remote.ServerConfig
 import com.cleanbot.app.notification.RobotErrorNotifier
 import kotlinx.coroutines.flow.collectLatest
@@ -67,6 +69,9 @@ class RobotRepository(
     /** Отдельный dispatcher для записи кэша: телеметрия не ждёт БД. */
     private val dbScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** Время последней очистки старой телеметрии (мс); защищает от параллельных свипов. */
+    private val lastRetentionSweep = AtomicLong(0L)
+
     suspend fun refreshFleet() {
         runCatching { api.listRobots() }.onSuccess { summaries ->
             _robots.update { current ->
@@ -77,6 +82,8 @@ class RobotRepository(
                 }
                 merged
             }
+        }.onFailure { e ->
+            Log.w(TAG, "Список роботов недоступен (fleet не обновлён)", e)
         }
     }
 
@@ -142,7 +149,24 @@ class RobotRepository(
         dbScope.launch {
             runCatching { dao.upsertTelemetry(entities) }
                 .onFailure { Log.w(TAG, "Не удалось записать телеметрию в кэш", it) }
+            maybeSweepTelemetry(dao)
         }
+    }
+
+    /**
+     * Ретеншн кэша: телеметрия пишется раз в секунду на робота, поэтому раз в
+     * [TELEMETRY_SWEEP_INTERVAL_MS] удаляем записи старше [TELEMETRY_RETENTION_DAYS] дней
+     * (та же политика, что и при старте приложения). CAS-гвард — чтобы соседние
+     * батчи не запускали очистку одновременно.
+     */
+    private fun maybeSweepTelemetry(dao: CleanBotDao) {
+        val now = System.currentTimeMillis()
+        val last = lastRetentionSweep.get()
+        if (now - last < TELEMETRY_SWEEP_INTERVAL_MS) return
+        if (!lastRetentionSweep.compareAndSet(last, now)) return
+        val cutoff = now - TELEMETRY_RETENTION_DAYS * 86_400_000L
+        runCatching { dao.deleteTelemetryBefore(cutoff) }
+            .onFailure { Log.w(TAG, "Не удалось очистить старую телеметрию", it) }
     }
 
     suspend fun sendCommand(robotId: String, command: String): CommandResponse =
@@ -237,5 +261,9 @@ class RobotRepository(
 
     private companion object {
         const val TAG = "RobotRepository"
+
+        /** Порог ретеншна кэша телеметрии (дней); та же политика в CleanBotApp при старте. */
+        const val TELEMETRY_RETENTION_DAYS = 7L
+        const val TELEMETRY_SWEEP_INTERVAL_MS = 10 * 60 * 1000L
     }
 }
