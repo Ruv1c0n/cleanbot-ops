@@ -1,3 +1,21 @@
 <resources>
     <string name="app_name">CleanBot Ops</string>
+
+    <!-- Каналы уведомлений -->
+    <string name="notif_channel_errors">Ошибки роботов</string>
+    <string name="notif_channel_errors_desc">Аварии роботов из потока телеметрии</string>
+    <string name="notif_channel_recovery">Восстановление роботов</string>
+    <string name="notif_channel_recovery_desc">Робот вышел из аварийного состояния</string>
+
+    <!-- Уведомление об ошибке -->
+    <string name="notif_fault_title">%1$s: %2$s</string>
+    <string name="error_stuck">Робот заблокирован препятствием и не может двигаться</string>
+    <string name="error_brush_jammed">Заклинило основную щётку</string>
+    <string name="error_tank_full">Бак для мусора заполнен, требуется опустошение</string>
+    <string name="error_sensor_fault">Неисправность датчика, навигация недоступна</string>
+    <string name="error_low_battery">Критически низкий заряд батареи</string>
+    <string name="error_unknown">Аварийное состояние робота</string>
+
+    <!-- Recovery-уведомление -->
+    <string name="notif_recovered">%1$s восстановлен и продолжает работу</string>
 </resources>

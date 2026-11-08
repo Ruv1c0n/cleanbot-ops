@@ -27,6 +27,7 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 import com.cleanbot.app.data.remote.ServerConfig
+import com.cleanbot.app.notification.RobotErrorNotifier
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 
@@ -53,7 +54,9 @@ class RobotRepository(
     private val api: RobotApi = RobotApi(),
     private val socket: TelemetrySocket = TelemetrySocket(),
     /** Офлайн-кэш Room; null — кэш отключён (по умолчанию для совместимости). */
-    private val db: CleanBotDatabase? = null
+    private val db: CleanBotDatabase? = null,
+    /** Публикатор локальных уведомлений об ошибках; null — уведомления отключены. */
+    private val errorNotifier: RobotErrorNotifier? = null
 ) {
     private val _robots = MutableStateFlow<Map<String, RobotUiState>>(emptyMap())
     val robots: StateFlow<Map<String, RobotUiState>> = _robots.asStateFlow()
@@ -109,6 +112,11 @@ class RobotRepository(
                 )
             }
             merged
+        }
+        // Детектор ошибок edge-trigger: уведомление на переход в ERROR / смену кода / recovery.
+        batch.forEach { t ->
+            val name = _robots.value[t.robotId]?.name ?: t.robotId
+            errorNotifier?.onTelemetry(t.robotId, name, t.state, t.error)
         }
         cacheTelemetry(batch)
     }
