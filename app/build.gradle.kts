@@ -33,6 +33,11 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    // Юнит-тесты репозитория используют android.util.Log — возвращаем дефолты вместо исключения.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -71,6 +76,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.0")
 }
 
 ksp {

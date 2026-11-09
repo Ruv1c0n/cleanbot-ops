@@ -163,6 +163,7 @@ class RobotDetailViewModel(
             runCatching { repository.updateSettings(newSettings) }
                 .onSuccess {
                     ServerConfig.hostPort.value = hostPort
+                    AppContainer.saveServerAddress(hostPort)
                     repository.refreshFleet()
                     _settings.value = newSettings
                 }
