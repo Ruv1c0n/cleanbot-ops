@@ -67,7 +67,9 @@ def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
         summary = summarize_fn(dropped)
         print(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога; "
               f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
-        return messages[:1] + [{"role": "user", "content": summary}] + messages[1:]
+        # Роль system (сразу после основного system): некоторые OpenAI-совместимые
+        # серверы плохо переносят два подряд идущих user-сообщения.
+        return messages[:1] + [{"role": "system", "content": summary}] + messages[1:]
     print(f"[TRIM: удалено {len(dropped)} сообщений; "
           f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
     return messages
