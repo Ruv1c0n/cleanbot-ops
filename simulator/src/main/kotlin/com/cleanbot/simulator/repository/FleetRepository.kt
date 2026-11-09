@@ -3,12 +3,15 @@ package com.cleanbot.simulator.repository
 import com.cleanbot.simulator.model.*
 import com.cleanbot.simulator.robot.Command
 import com.cleanbot.simulator.robot.RobotEngine
+import com.cleanbot.simulator.robot.dueScheduleEntries
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -16,6 +19,11 @@ import java.util.concurrent.ConcurrentLinkedDeque
 import kotlin.random.Random
 
 class FleetRepository(private val scope: CoroutineScope) {
+
+    private companion object {
+        /** Как часто проверяем расписание (цикл должен попадать в минуту срабатывания). */
+        const val SCHEDULE_CHECK_INTERVAL_MS = 15_000L
+    }
 
     val robots: List<RobotEngine> = listOf(
         RobotEngine(id = "cleanbot-01", name = "CleanBot 01"),
@@ -28,6 +36,9 @@ class FleetRepository(private val scope: CoroutineScope) {
     private val logs = ConcurrentHashMap<String, ConcurrentLinkedDeque<LogEntry>>()
     private val settings = ConcurrentHashMap<String, RobotSettings>()
     private val plans = ConcurrentHashMap<String, CleaningPlan>()
+
+    /** Ключ последнего срабатывания расписания на робота ("день/HH:mm") — защита от дублей внутри минуты. */
+    private val lastScheduleFire = ConcurrentHashMap<String, String>()
 
     /** Транслирует срез телеметрии по всем роботам разом, раз в секунду. */
     val telemetryFlow = MutableSharedFlow<List<Telemetry>>(replay = 1)
@@ -125,7 +136,7 @@ class FleetRepository(private val scope: CoroutineScope) {
         return true
     }
 
-    /** Запускает фоновые циклы: тик каждого робота раз в секунду + рассылку телеметрии. */
+    /** Запускает фоновые циклы: тик каждого робота раз в секунду, рассылка телеметрии и проверка расписания. */
     fun start() {
         robots.forEach { robot ->
             scope.launch {
@@ -139,6 +150,37 @@ class FleetRepository(private val scope: CoroutineScope) {
             while (isActive) {
                 telemetryFlow.emit(robots.map { it.snapshot() })
                 delay(1000)
+            }
+        }
+        scope.launch {
+            while (isActive) {
+                checkSchedules()
+                delay(SCHEDULE_CHECK_INTERVAL_MS)
+            }
+        }
+    }
+
+    /**
+     * Автозапуск по расписанию: в минуту срабатывания (день недели + "HH:mm")
+     * роботу в IDLE отправляется scheduledStart с mode из записи.
+     * lastScheduleFire не даёт сработать повторно в ту же минуту (цикл тикает чаще).
+     */
+    fun checkSchedules(now: LocalDateTime = LocalDateTime.now()) {
+        val day = now.dayOfWeek.value
+        val time = now.format(DateTimeFormatter.ofPattern("HH:mm"))
+        val key = "$day/$time"
+        robots.forEach { robot ->
+            val due = dueScheduleEntries(schedules[robot.id].orEmpty(), day, time)
+            if (due.isEmpty() || lastScheduleFire[robot.id] == key) return@forEach
+            lastScheduleFire[robot.id] = key
+            val mode = due.first().mode
+            scope.launch {
+                val response = robot.scheduledStart(mode, UUID.randomUUID().toString())
+                if (response.accepted) {
+                    appendLog(robot.id, "INFO", "Запуск по расписанию ($day, $time): mode=$mode")
+                } else {
+                    appendLog(robot.id, "WARN", "Расписание ($day, $time) пропущено: ${response.reason}")
+                }
             }
         }
     }
