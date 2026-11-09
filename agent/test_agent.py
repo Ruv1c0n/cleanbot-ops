@@ -116,9 +116,11 @@ def test_summarize_strategy_structure():
             user("второй" * 40), assistant("ответ2" * 40)]
     out = ensure_context_budget(list(msgs), budget=250, strategy="summarize",
                                 summarize_fn=fake_summarize)
-    assert [m["role"] for m in out] == ["system", "user", "user", "assistant"]
+    # память диалога идёт как system сразу после основного system —
+    # не два user подряд (некоторые OpenAI-совместимые серверы это не любят)
+    assert [m["role"] for m in out] == ["system", "system", "user", "assistant"]
     assert out[0]["content"] == "SYSTEM"
-    assert out[1] == {"role": "user", "content": "ПАМЯТЬ ДИАЛОГА"}
+    assert out[1] == {"role": "system", "content": "ПАМЯТЬ ДИАЛОГА"}
     assert out[2:] == msgs[3:]                    # остаток — второй ход
     assert dropped_witness == msgs[1:3]           # сжат первый ход
 

@@ -34,12 +34,20 @@ def local_available() -> bool:
         return False
 
 
-active = LOCAL if local_available() else FALLBACK
-if active is FALLBACK and not FALLBACK["api_key"]:
-    raise SystemExit(
-        "Локальная модель недоступна, а FALLBACK_API_KEY не задан")
-client = make_client(active)
-print(f"[модель: {active['model']} @ {active['base_url']}]")
+active = None
+client = None
+
+
+def select_backend():
+    """Выбирает бэкенд (локальный/онлайн) один раз при старте — не на import,
+    чтобы agent.py можно было импортировать и тестировать без живого сервера."""
+    global active, client
+    active = LOCAL if local_available() else FALLBACK
+    if active is FALLBACK and not FALLBACK["api_key"]:
+        raise SystemExit(
+            "Локальная модель недоступна, а FALLBACK_API_KEY не задан")
+    client = make_client(active)
+    print(f"[модель: {active['model']} @ {active['base_url']}]")
 
 
 def chat(**kwargs):
@@ -350,6 +358,7 @@ if __name__ == "__main__":
 
     SESSION_ID, STRATEGY, CONTEXT_BUDGET = args.session, args.strategy, args.budget
 
+    select_backend()
     messages = load_session(SESSION_ID, SYSTEM_PROMPT)
     if len(messages) > 1:
         print(f"[сессия '{SESSION_ID}': загружено {len(messages) - 1} сообщений из прошлых запусков]")
