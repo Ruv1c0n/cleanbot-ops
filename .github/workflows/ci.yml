@@ -7,7 +7,7 @@ on:
 
 jobs:
   android:
-    name: Gradle — simulator tests + app build
+    name: Gradle — simulator tests + app unit tests + app build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +17,7 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - name: Tests and build
-        run: ./gradlew :simulator:test :app:assembleDebug --console=plain
+        run: ./gradlew :simulator:test :app:testDebugUnitTest :app:assembleDebug --console=plain
 
   agent:
     name: pytest — agent context logic
