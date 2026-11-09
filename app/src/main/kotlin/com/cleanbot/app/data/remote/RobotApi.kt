@@ -20,12 +20,13 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 
-class RobotApi {
+/** open + open-методы: юнит-тесты репозитория подменяют API фейком-наследником. */
+open class RobotApi {
 
     private val client get() = ApiClient.http
     private val base get() = ServerConfig.httpBaseUrl
 
-    suspend fun listRobots(): List<RobotSummary> =
+    open suspend fun listRobots(): List<RobotSummary> =
         client.get("$base/robots").body()
 
     suspend fun getRobot(id: String): RobotSummary =
@@ -47,7 +48,7 @@ class RobotApi {
         }
     }
 
-    suspend fun getPlan(id: String): CleaningPlan =
+    open suspend fun getPlan(id: String): CleaningPlan =
         client.get("$base/robots/$id/plan").body()
 
     /** PUT /plan: возвращает null при успехе или текст ошибки валидации из 400. */
@@ -62,7 +63,7 @@ class RobotApi {
     }
 
     /** from/to — ISO-8601, опциональны; фильтр по startedAt, границы включительно. */
-    suspend fun getSessions(id: String, from: String? = null, to: String? = null): List<Session> =
+    open suspend fun getSessions(id: String, from: String? = null, to: String? = null): List<Session> =
         client.get("$base/robots/$id/sessions") {
             from?.let { parameter("from", it) }
             to?.let { parameter("to", it) }
