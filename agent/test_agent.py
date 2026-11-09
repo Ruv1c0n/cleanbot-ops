@@ -133,6 +133,34 @@ def test_summarize_without_callback_raises():
         ensure_context_budget(list(msgs), budget=250, strategy="summarize")
 
 
+def test_summarize_folds_old_memory_instead_of_accumulating():
+    seen = []
+
+    def fake_summarize(dropped):
+        seen.append(list(dropped))
+        return f"ПАМЯТЬ-{len(seen)}"
+
+    msgs = [{"role": "system", "content": "SYSTEM"},
+            user("x" * 800), assistant("y" * 800),     # первый ход — вылетит
+            user("a" * 150), assistant("b" * 150)]     # второй — останется
+    out1 = ensure_context_budget(list(msgs), budget=250, strategy="summarize",
+                                 summarize_fn=fake_summarize)
+    assert out1[1] == {"role": "system", "content": "ПАМЯТЬ-1"}
+
+    # диалог продолжился, снова превышение: старая память должна влиться
+    # в новое сжатие, а не остаться отдельным system-сообщением
+    grown = out1 + [user("c" * 150), assistant("d" * 150),
+                    user("e" * 150), assistant("f" * 150)]
+    out2 = ensure_context_budget(grown, budget=250, strategy="summarize",
+                                 summarize_fn=fake_summarize)
+    systems = [m for m in out2 if m["role"] == "system"]
+    assert len(systems) == 2                          # main system + ровно одна память
+    assert systems[1] == {"role": "system", "content": "ПАМЯТЬ-2"}
+    assert seen[1][0]["content"] == "ПАМЯТЬ-1"        # старая память ушла на пересжатие
+    assert seen[1][1:] == [user("a" * 150), assistant("b" * 150)]
+    no_orphan_tools(out2)
+
+
 # ---------- estimate_tokens ----------
 
 def test_estimate_tokens_counts_tools():
