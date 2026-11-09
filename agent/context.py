@@ -64,12 +64,21 @@ def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
         if summarize_fn is None:
             raise ValueError(
                 "strategy='summarize' требует summarize_fn (колбэк сжатия)")
-        summary = summarize_fn(dropped)
-        print(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога; "
-              f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
+        # Прежние «память диалога» (system-сообщения сразу после основного
+        # system) вливаем в новое сжатие: пересжимаясь поодиночке при каждом
+        # превышении, факты в них деградировали бы, а без вливания они
+        # накапливались бы — по одному сообщению на каждое превышение.
+        head, tail = messages[:1], messages[1:]
+        old_memory = []
+        while tail and tail[0]["role"] == "system":
+            old_memory.append(tail.pop(0))
+        summary = summarize_fn(old_memory + dropped)
+        folded = f" (+{len(old_memory)} старой памяти)" if old_memory else ""
+        print(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога"
+              f"{folded}; {est} -> {estimate_tokens(head + tail, tools)} усл. токенов]")
         # Роль system (сразу после основного system): некоторые OpenAI-совместимые
         # серверы плохо переносят два подряд идущих user-сообщения.
-        return messages[:1] + [{"role": "system", "content": summary}] + messages[1:]
+        return head + [{"role": "system", "content": summary}] + tail
     print(f"[TRIM: удалено {len(dropped)} сообщений; "
           f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
     return messages
