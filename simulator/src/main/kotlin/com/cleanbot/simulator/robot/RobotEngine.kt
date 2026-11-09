@@ -50,26 +50,43 @@ class RobotEngine(
     }
 
     suspend fun command(cmd: Command, requestId: String): CommandResponse = mutex.withLock {
+        commandLocked(cmd, requestId)
+    }
+
+    /** Логика команды при уже захваченном мьютексе (общая для command и scheduledStart). */
+    private suspend fun commandLocked(cmd: Command, requestId: String): CommandResponse {
         // Пустой план не даёт запустить уборку: предпросмотр в app блокирует Старт,
         // здесь дублируем отклонением, чтобы неаккуратный клиент не начал блуждание.
         val planNow = currentPlan
         if (cmd == Command.START && (planNow == null || planNow.zones.all { it.cells.isEmpty() })) {
             onLog?.invoke("WARN", "Команда START отклонена: план не задан")
-            return@withLock CommandResponse(accepted = false, requestId = requestId, reason = "План не задан")
+            return CommandResponse(accepted = false, requestId = requestId, reason = "План не задан")
         }
         when (val result = RobotFsm.applyCommand(state, cmd)) {
             is TransitionResult.Rejected -> {
                 onLog?.invoke("WARN", "Команда $cmd отклонена в состоянии $state")
-                CommandResponse(accepted = false, requestId = requestId, reason = result.reason)
+                return CommandResponse(accepted = false, requestId = requestId, reason = result.reason)
             }
             is TransitionResult.Accepted -> {
                 val previous = state
                 applySideEffects(cmd, previous)
                 state = result.newState
                 onLog?.invoke("INFO", "Команда $cmd принята: $previous → ${result.newState}")
-                CommandResponse(accepted = true, requestId = requestId)
+                return CommandResponse(accepted = true, requestId = requestId)
             }
         }
+    }
+
+    /**
+     * Автозапуск уборки по расписанию: задаёт mode из записи и стартует,
+     * только если робот в IDLE (иначе — отклонение, как у обычной команды).
+     */
+    suspend fun scheduledStart(mode: String, requestId: String): CommandResponse = mutex.withLock {
+        if (state != RobotState.IDLE) {
+            return@withLock CommandResponse(accepted = false, requestId = requestId, reason = "ILLEGAL_STATE")
+        }
+        this.mode = mode
+        commandLocked(Command.START, requestId)
     }
 
     private suspend fun applySideEffects(cmd: Command, previous: RobotState) {
