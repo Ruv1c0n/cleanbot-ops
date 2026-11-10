@@ -42,6 +42,33 @@ Android console for industrial cleaning robot fleets — live telemetry, remote 
 | **Инженерное меню** | настройки робота (имя, адрес сервера — сохраняется между запусками), журнал событий |
 | **Push-уведомления** | уведомления об ошибках роботов |
 
+## 🖼 Скриншоты
+
+Живой прогон: симулятор + приложение на эмуляторе (Pixel 10 Pro XL, API 37). Кадры — в [`docs/screenshots/`](docs/screenshots).
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/01-fleet.png" width="260" alt="Парк роботов"/><br><sub><b>Парк роботов</b> — состояния и заряд</sub></td>
+    <td align="center"><img src="docs/screenshots/02-dashboard.png" width="260" alt="Дашборд"/><br><sub><b>Дашборд</b> — уборка в реальном времени</sub></td>
+    <td align="center"><img src="docs/screenshots/03-map.png" width="260" alt="Карта"/><br><sub><b>Карта</b> — план, зоны, позиция робота</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/04-plan-preview.png" width="260" alt="Предпросмотр плана"/><br><sub><b>Предпросмотр плана</b> — маршрут перед стартом</sub></td>
+    <td align="center"><img src="docs/screenshots/05-plan-editor.png" width="260" alt="Редактор планов"/><br><sub><b>Редактор планов</b> — зоны тапами по сетке</sub></td>
+    <td align="center"><img src="docs/screenshots/06-schedule.png" width="260" alt="Расписание"/><br><sub><b>Расписание</b> — автозапуск уборок</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/07-sessions.png" width="260" alt="Сессии"/><br><sub><b>Сессии</b> — история уборок</sub></td>
+    <td align="center"><img src="docs/screenshots/08-stats.png" width="260" alt="Статистика"/><br><sub><b>Статистика</b> — агрегаты и график по дням</sub></td>
+    <td align="center"><img src="docs/screenshots/09-engineering.png" width="260" alt="Инженерное меню"/><br><sub><b>Инженерное меню</b> — настройки и журнал</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/10-notification.png" width="260" alt="Push-уведомление"/><br><sub><b>Push-уведомление</b> — авария робота</sub></td>
+    <td align="center"><img src="docs/screenshots/11-error-state.png" width="260" alt="Конкретизация ошибки"/><br><sub><b>Ошибка</b> — конкретизация и сброс</sub></td>
+    <td></td>
+  </tr>
+</table>
+
 ## 🏗 Архитектура
 
 ```text
