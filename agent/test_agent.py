@@ -196,7 +196,8 @@ def docs_ws(tmp_path, monkeypatch):
 
 def test_search_docs_ranks_by_score(docs_ws):
     out = search_docs("уборка")
-    assert out.startswith("1. a.md (score=3): Первый абзац")
+    # точные вхождения (3) + словоформы по основе с весом 0.4 (3 * 0.4) = 4.2
+    assert out.startswith("1. a.md (score=4.2): Первый абзац")
     assert out.index("Первый абзац") < out.index("в другом файле")
 
 
@@ -238,6 +239,39 @@ def test_search_docs_word_boundaries(tmp_path, monkeypatch):
     assert "план уборки" in out                # целое слово находится
 
 
+def test_search_docs_finds_inflections(tmp_path, monkeypatch):
+    """Словоформы находятся по основе: «задача» находит «задач/задачи»
+    (регресс: раньше точная форма давала «ничего не найдено» на корпусе
+    из словоформ), а точное вхождение ранжируется выше словоформы."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text(
+        "В первую очередь выполняется каждая задача.\n\n"
+        "Журнал хранит список задач и задачи прошлых дней.\n",
+        encoding="utf-8")
+    monkeypatch.setattr(context, "WORKSPACE", tmp_path)
+    out = search_docs("задача")
+    assert "каждая задача" in out
+    assert "список задач" in out
+    assert out.index("каждая задача") < out.index("список задач")
+
+
+def test_search_docs_stem_does_not_match_derived_words(tmp_path, monkeypatch):
+    """Основа не должна находить производные слова (регресс на границах
+    слова из #38): «план» не находит «планировщик», «задача» — «задание»."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text(
+        "Тут описан планировщик и задание.\n\n"
+        "А вот и сам план.\n",
+        encoding="utf-8")
+    monkeypatch.setattr(context, "WORKSPACE", tmp_path)
+    assert "планировщик" not in search_docs("план")
+    out = search_docs("задача")
+    assert "задание" not in out
+    assert "ничего не найдено" in out
+
+
 # ---------- safe_path ----------
 
 def test_safe_path_escape_raises(tmp_path, monkeypatch):
@@ -261,10 +295,80 @@ def test_fallback_regression_import_openai():
     """Баг: chat() ловила openai.APIConnectionError, но модуль openai в
     agent.py не импортировался — NameError внутри except убивал обработчик,
     и переключение на онлайн-модель не срабатывало никогда. Фикс — явный
-    import openai. Проверяем исходник, а не импортируем agent.py: тот при
-    импорте стучится к Ollama, а в тестах сети нет."""
+    import openai. Проверяем исходник; импортировать agent.py тоже безопасно
+    (бэкенд выбирается в main, см. сессии ниже), но здесь важен именно исходник."""
     src = Path(__file__).with_name("agent.py").read_text(encoding="utf-8")
     assert re.search(r"^import openai$", src, re.M), \
         "agent.py должен импортировать openai — иначе except openai.* мёртв"
     assert "openai.APIConnectionError" in src, \
         "fallback-обработчик APIConnectionError должен остаться на месте"
+
+
+# ---------- сессии и задачи (agent.py): импорт безопасен — сеть только в main ----------
+
+import agent
+
+
+@pytest.fixture
+def sessions_ws(tmp_path, monkeypatch):
+    # SESSIONS_DIR нужен и context._session_path, и agent.save_session (mkdir)
+    monkeypatch.setattr(context, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(agent, "SESSIONS_DIR", tmp_path)
+    return tmp_path
+
+
+def test_load_session_missing_returns_fresh(sessions_ws):
+    assert agent.load_session("nosuch", "SYS") == [{"role": "system", "content": "SYS"}]
+
+
+def test_load_session_roundtrip(sessions_ws):
+    history = [user("привет"), assistant("ответ"), tool("c1", "рез")]
+    agent.save_session("rt", history)                     # tool-сообщения сохраняются
+    assert agent.load_session("rt", "SYS") == [{"role": "system", "content": "SYS"}] + history
+
+
+def test_load_session_rejects_wrong_shape(sessions_ws, capsys):
+    """Регресс: json валиден, но это не сообщения — guard ловит и форму
+    (раньше агент падал дальше по ходу: KeyError role в _turn_starts,
+    AttributeError в save_session), а не только битый JSON."""
+    bad_payloads = (
+        '[1, 2, 3]',
+        '[{"content": "без роли"}]',
+        '[{"role": 1, "content": "x"}]',
+        '[{"role": "user", "content": 5}]',
+        '"строка"',
+        '{}',
+    )
+    for payload in bad_payloads:
+        (sessions_ws / "bad.json").write_text(payload, encoding="utf-8")
+        assert agent.load_session("bad", "SYS") == [{"role": "system", "content": "SYS"}]
+        assert "повреждён" in capsys.readouterr().out
+
+
+def test_save_session_keeps_single_system(sessions_ws):
+    agent.save_session("sys", [{"role": "system", "content": "SYS"}, user("u")])
+    msgs = agent.load_session("sys", "SYS")
+    assert [m["role"] for m in msgs] == ["system", "user"]   # system один, из аргумента
+
+
+def test_add_task_and_list_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(context, "WORKSPACE", tmp_path)
+    assert agent.add_task("Помыть зону A", "high", "R1") == \
+        "Задача #1 добавлена: Помыть зону A (приоритет high)"
+    assert agent.add_task("Пылесосить", "low") == \
+        "Задача #2 добавлена: Пылесосить (приоритет low)"
+    assert "#1 [high] Помыть зону A (робот R1)" in agent.list_tasks("all")
+    assert "#2 [low] Пылесосить" in agent.list_tasks("open", priority="low")
+    assert agent.list_tasks("done") == "Задач не найдено."
+    with pytest.raises(ValueError):
+        agent.add_task("   ", "high")
+    with pytest.raises(ValueError):
+        agent.add_task("x", "urgent")
+
+
+def test_execute_tool_errors_become_strings(tmp_path, monkeypatch):
+    monkeypatch.setattr(context, "WORKSPACE", tmp_path)
+    assert agent.execute_tool("nope", "{}").startswith("ОШИБКА")
+    assert agent.execute_tool("add_task", "{битый json").startswith("ОШИБКА")
+    assert agent.execute_tool(
+        "add_task", '{"title": "T", "priority": "high"}').startswith("Задача #")
