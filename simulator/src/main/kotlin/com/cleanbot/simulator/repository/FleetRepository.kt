@@ -19,7 +19,12 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
 import kotlin.random.Random
 
-class FleetRepository(private val scope: CoroutineScope) {
+class FleetRepository(
+    private val scope: CoroutineScope,
+    /** Шанс аварии за тик уборки (дефолт — как в RobotEngine). Тестам, доводящим робота до IDLE, нужен 0.0:
+     *  случайная авария уводит робота в ERROR, и тест становится недетерминированным. */
+    faultChance: Double = 0.01
+) {
 
     private companion object {
         /** Как часто проверяем расписание (цикл должен попадать в минуту срабатывания). */
@@ -27,9 +32,9 @@ class FleetRepository(private val scope: CoroutineScope) {
     }
 
     val robots: List<RobotEngine> = listOf(
-        RobotEngine(id = "cleanbot-01", name = "CleanBot 01"),
-        RobotEngine(id = "cleanbot-02", name = "CleanBot 02"),
-        RobotEngine(id = "cleanbot-03", name = "CleanBot 03")
+        RobotEngine(id = "cleanbot-01", name = "CleanBot 01", faultChance = faultChance),
+        RobotEngine(id = "cleanbot-02", name = "CleanBot 02", faultChance = faultChance),
+        RobotEngine(id = "cleanbot-03", name = "CleanBot 03", faultChance = faultChance)
     )
 
     private val schedules = ConcurrentHashMap<String, MutableList<Schedule>>()
