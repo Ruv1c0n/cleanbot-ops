@@ -38,7 +38,7 @@ class FleetRepository(private val scope: CoroutineScope) {
     private val settings = ConcurrentHashMap<String, RobotSettings>()
     private val plans = ConcurrentHashMap<String, CleaningPlan>()
 
-    /** Ключ последнего срабатывания расписания на робота ("день/HH:mm") — защита от дублей внутри минуты. */
+    /** Ключ последнего срабатывания расписания на робота ("дата/HH:mm") — защита от дублей внутри минуты. */
     private val lastScheduleFire = ConcurrentHashMap<String, String>()
 
     /** Транслирует срез телеметрии по всем роботам разом, раз в секунду. */
@@ -171,11 +171,13 @@ class FleetRepository(private val scope: CoroutineScope) {
      * Автозапуск по расписанию: в минуту срабатывания (день недели + "HH:mm", локальная
      * таймзона сервера) каждой записи срабатывания даётся попытка scheduledStart.
      * lastScheduleFire не даёт сработать повторно в ту же минуту (цикл тикает чаще).
+     * Ключ хранит дату, а не только день недели: еженедельная запись с ключом
+     * "день недели/время" сработала бы один раз за жизнь процесса.
      */
     fun checkSchedules(now: LocalDateTime = LocalDateTime.now()) {
         val day = now.dayOfWeek.value
         val time = now.format(DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT))
-        val key = "$day/$time"
+        val key = "${now.toLocalDate()}/$time"
         robots.forEach { robot ->
             val due = dueScheduleEntries(schedules[robot.id].orEmpty(), day, time)
             if (due.isEmpty() || lastScheduleFire[robot.id] == key) return@forEach

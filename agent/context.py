@@ -98,6 +98,16 @@ def safe_path(rel: str) -> Path:
 
 
 # ---------- шаг 5: поиск по документам проекта ----------
+def _stem(word: str) -> str | None:
+    """Основа слова для поиска словоформ: у слов от 4 символов обрезаем
+    1-2 последние буквы (у 6+ — две, у 4-5 — одну)."""
+    if len(word) >= 6:
+        return word[:-2]
+    if len(word) >= 4:
+        return word[:-1]
+    return None
+
+
 def search_docs(query: str, limit: int = 3) -> str:
     """Keyword-поиск по workspace/docs/. Вне песочницы не выходит: путь
     жёстко задан, пользовательский ввод влияет только на текст запроса."""
@@ -114,12 +124,20 @@ def search_docs(query: str, limit: int = 3) -> str:
                       path.read_text(encoding="utf-8").split("\n\n") if p.strip()]
         for para in paragraphs:
             low = para.lower()
-            # вхождения слова целиком (по границам слова), а не подстроки:
-            # «план» не должен находить «планировщик»
-            score = sum(len(re.findall(r"\b" + re.escape(w) + r"\b", low))
-                        for w in words)
+            # Точное слово целиком (по границам слова) — полный вес; плюс
+            # словоформы: основа и до 2 букв окончания («задача» находит
+            # «задачи/задач»), с весом 0.4, чтобы точное вхождение всегда
+            # ранжировалось выше. Хвост длиннее 2 букв — уже другое слово:
+            # «план» не находит «планировщик», «задача» — «задание».
+            score = 0.0
+            for w in words:
+                score += len(re.findall(r"\b" + re.escape(w) + r"\b", low))
+                stem = _stem(w)
+                if stem:
+                    score += 0.4 * len(
+                        re.findall(r"\b" + re.escape(stem) + r"\w{0,2}\b", low))
             if score:
-                scored.append((score, path.name, para))
+                scored.append((round(score, 2), path.name, para))
     if not scored:
         return f"По запросу '{query}' ничего не найдено."
     scored.sort(key=lambda x: -x[0])

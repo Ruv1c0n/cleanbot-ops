@@ -88,8 +88,16 @@ def load_session(session_id: str, system_prompt: str) -> list:
         return [{"role": "system", "content": system_prompt}]
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            raise ValueError("сессия не список сообщений")
+        # Валиден не просто JSON-список, а список сообщений: dict со строковым
+        # role и строковым (или None у tool_calls-ассистента) content — иначе
+        # агент упал бы на первом же обращении к истории, а не на чтении файла.
+        if not isinstance(data, list) or not all(
+            isinstance(m, dict)
+            and isinstance(m.get("role"), str)
+            and (m.get("content") is None or isinstance(m.get("content"), str))
+            for m in data
+        ):
+            raise ValueError("сессия не список сообщений {role, content}")
     except (json.JSONDecodeError, ValueError, OSError) as e:
         # Битый/обрезанный файл сессии не должен ронять агент на старте —
         # начинаем свежую историю, файл перезапишется при первом save_session.
