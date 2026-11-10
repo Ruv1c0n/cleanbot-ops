@@ -29,10 +29,10 @@ import androidx.compose.ui.unit.sp
 import com.cleanbot.app.data.model.Cell
 import com.cleanbot.app.data.model.CleaningPlan
 import com.cleanbot.app.data.model.Position
-import com.cleanbot.app.ui.theme.MapBackground
-import com.cleanbot.app.ui.theme.MapGridLine
+import com.cleanbot.app.ui.theme.mapBackground
+import com.cleanbot.app.ui.theme.mapGridLine
 import com.cleanbot.app.ui.theme.MapRoute
-import com.cleanbot.app.ui.theme.RobotMarker
+import com.cleanbot.app.ui.theme.robotMarker
 import com.cleanbot.app.ui.theme.ZoneColors
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -53,6 +53,11 @@ fun PlanMapView(
     route: List<Cell> = emptyList()
 ) {
     var boxPx by remember { mutableStateOf(IntSize.Zero) }
+    // Цвета читаются на composable-уровне: DrawScope не composable,
+    // а фон/сетка/маркер зависят от тёмной темы.
+    val mapBg = mapBackground()
+    val mapLine = mapGridLine()
+    val marker = robotMarker()
     Box(
         modifier
             .onSizeChanged { boxPx = it }
@@ -65,7 +70,7 @@ fun PlanMapView(
             val originX = (size.width - gridW) / 2f
             val originY = (size.height - gridH) / 2f
 
-            drawRect(color = MapBackground, topLeft = Offset(originX, originY), size = Size(gridW, gridH))
+            drawRect(color = mapBg, topLeft = Offset(originX, originY), size = Size(gridW, gridH))
 
             plan.zones.forEachIndexed { index, zone ->
                 val color = ZoneColors[index % ZoneColors.size]
@@ -82,10 +87,10 @@ fun PlanMapView(
 
             // сетка
             for (i in 0..plan.gridW) {
-                drawLine(MapGridLine, Offset(originX + i * cell, originY), Offset(originX + i * cell, originY + gridH))
+                drawLine(mapLine, Offset(originX + i * cell, originY), Offset(originX + i * cell, originY + gridH))
             }
             for (j in 0..plan.gridH) {
-                drawLine(MapGridLine, Offset(originX, originY + j * cell), Offset(originX + gridW, originY + j * cell))
+                drawLine(mapLine, Offset(originX, originY + j * cell), Offset(originX + gridW, originY + j * cell))
             }
 
             // планируемая траектория — пунктир через центры клеток маршрута
@@ -110,7 +115,7 @@ fun PlanMapView(
             position?.let { p ->
                 val cx = originX + (p.x.coerceIn(0, plan.gridW - 1) + 0.5f) * cell
                 val cy = originY + (p.y.coerceIn(0, plan.gridH - 1) + 0.5f) * cell
-                drawCircle(color = RobotMarker, radius = cell * 0.35f, center = Offset(cx, cy))
+                drawCircle(color = marker, radius = cell * 0.35f, center = Offset(cx, cy))
                 drawCircle(color = Color.White, radius = cell * 0.12f, center = Offset(cx, cy))
             }
         }

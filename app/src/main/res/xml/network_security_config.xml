@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Приложение по дизайну ходит по http/ws к симулятору в локальной сети:
+    эмулятор — 10.0.2.2, физическое устройство — IP компьютера (см. README
+    «Запуск»). Cleartext разрешён осознанно для всего трафика приложения;
+    других сетевых адресов у клиента нет.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

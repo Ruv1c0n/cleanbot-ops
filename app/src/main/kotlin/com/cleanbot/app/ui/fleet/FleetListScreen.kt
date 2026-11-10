@@ -8,15 +8,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -46,6 +49,9 @@ fun FleetListScreen(
     val connection by viewModel.connectionState.collectAsStateWithLifecycle()
 
     Scaffold(
+        // safeDrawing включает display cutout: в landscape контент не уходит
+        // под вырез камеры (аудит 2026-11-11).
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
                 title = { Text("Парк роботов") },
@@ -59,7 +65,12 @@ fun FleetListScreen(
         val list = robots.values.sortedBy { it.id }
         if (list.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
+                when (connection) {
+                    // Рыночный стандарт вместо вечного спиннера: понятный
+                    // оффлайн-стейт с повтором (аудит 2026-11-11).
+                    ConnectionState.DISCONNECTED -> OfflineState(onRetry = viewModel::refresh)
+                    else -> CircularProgressIndicator()
+                }
             }
         } else {
             LazyColumn(
@@ -72,6 +83,21 @@ fun FleetListScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun OfflineState(onRetry: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("Нет связи с симулятором", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Проверь, что симулятор запущен, и адрес верен —\nон задаётся в инженерном меню робота.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onRetry) { Text("Повторить") }
     }
 }
 

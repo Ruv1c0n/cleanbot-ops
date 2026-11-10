@@ -1,5 +1,7 @@
 package com.cleanbot.app.ui.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 val Primary = Color(0xFF00695C)
@@ -27,3 +29,18 @@ val RobotMarker = Color(0xFF37474F)
 
 /** Планируемая траектория (пунктир) на карте плана. */
 val MapRoute = Color(0xFFD84315)
+
+// Тёмные варианты карты: без них карта остаётся светлым пятном в тёмной
+// теме (аудит 2026-11-11).
+private val MapGridLineDark = Color(0xFF3A4149)
+private val MapBackgroundDark = Color(0xFF1E2226)
+private val RobotMarkerDark = Color(0xFFECEFF1)
+
+@Composable
+fun mapBackground(): Color = if (isSystemInDarkTheme()) MapBackgroundDark else MapBackground
+
+@Composable
+fun mapGridLine(): Color = if (isSystemInDarkTheme()) MapGridLineDark else MapGridLine
+
+@Composable
+fun robotMarker(): Color = if (isSystemInDarkTheme()) RobotMarkerDark else RobotMarker

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Тёмная платформенная тема: тёмный фон окна до отрисовки Compose
+         (иначе в системной тёмной теме мигает светлым и серые бары). -->
+    <style name="Theme.CleanBotOps" parent="android:Theme.Material.NoActionBar" />
+</resources>
