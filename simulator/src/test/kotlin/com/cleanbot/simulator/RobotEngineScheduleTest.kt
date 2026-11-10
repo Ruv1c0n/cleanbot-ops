@@ -59,4 +59,22 @@ class RobotEngineScheduleTest {
         assertEquals("План не задан", response.reason)
         assertEquals("IDLE", engine.snapshot().state)
     }
+
+    @Test
+    fun `rejected scheduledStart does not change mode`() = runBlocking {
+        val engine = RobotEngine("t", "T", faultChance = 0.0) // план не задан → START отклонится
+        val modes = mutableListOf<String>()
+        engine.onSessionFinished = { _, _, _, mode, _ -> modes += mode }
+
+        val rejected = engine.scheduledStart("wet_mopping", "req1")
+        assertFalse(rejected.accepted)
+        assertEquals("IDLE", engine.snapshot().state)
+
+        // mode не должен был смениться при отклонённом автозапуске: последующая
+        // обычная уборка выходит со старым режимом (dry_sweep по умолчанию).
+        engine.setPlan(testPlan())
+        engine.command(Command.START, "req2")
+        engine.command(Command.ABORT, "req3")
+        assertEquals(listOf("dry_sweep"), modes)
+    }
 }

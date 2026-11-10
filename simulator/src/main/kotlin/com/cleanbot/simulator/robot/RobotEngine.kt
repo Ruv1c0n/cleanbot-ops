@@ -78,15 +78,20 @@ class RobotEngine(
     }
 
     /**
-     * Автозапуск уборки по расписанию: задаёт mode из записи и стартует,
+     * Автозапуск уборки по расписанию: стартует с mode из записи,
      * только если робот в IDLE (иначе — отклонение, как у обычной команды).
      */
     suspend fun scheduledStart(mode: String, requestId: String): CommandResponse = mutex.withLock {
         if (state != RobotState.IDLE) {
             return@withLock CommandResponse(accepted = false, requestId = requestId, reason = "ILLEGAL_STATE")
         }
-        this.mode = mode
-        commandLocked(Command.START, requestId)
+        val response = commandLocked(Command.START, requestId)
+        // mode меняем только при принятом старте: при отклонении («План не задан»)
+        // робот остаётся IDLE, и телеметрия не должна показывать новый режим.
+        if (response.accepted) {
+            this.mode = mode
+        }
+        response
     }
 
     private suspend fun applySideEffects(cmd: Command, previous: RobotState) {

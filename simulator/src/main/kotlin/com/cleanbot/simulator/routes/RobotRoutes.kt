@@ -40,8 +40,10 @@ fun Route.robotRoutes(repo: FleetRepository) {
 
         put("/{id}/schedules") {
             val id = call.parameters["id"]!!
+            if (repo.findRobot(id) == null) return@put call.respond(HttpStatusCode.NotFound)
             val body = call.receive<ScheduleUpdateRequest>()
-            if (!repo.replaceSchedule(id, body.entries)) return@put call.respond(HttpStatusCode.NotFound)
+            val error = repo.replaceSchedule(id, body.entries)
+            if (error != null) return@put call.respondText(error, ContentType.Text.Plain, HttpStatusCode.BadRequest)
             call.respond(HttpStatusCode.OK)
         }
 
