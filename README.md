@@ -4,7 +4,7 @@
 
 Android console for industrial cleaning robot fleets — live telemetry, remote commands, schedules &amp; stats. Kotlin • Jetpack Compose • Ktor • WebSocket. Includes a digital-twin simulator.
 
-## **Операционная консоль для парка промышленных клининговых роботов**
+## Операционная консоль для парка промышленных клининговых роботов
 
 ![Kotlin](https://img.shields.io/badge/Kotlin-1.9-7F52FF)
 ![Jetpack Compose](https://img.shields.io/badge/Jetpack_Compose-UI-4285F4)
@@ -41,8 +41,6 @@ Android console for industrial cleaning robot fleets — live telemetry, remote 
 | **Офлайн-кэш** | телеметрия и сессии хранятся локально (Room), доступны без сети |
 | **Инженерное меню** | настройки робота (имя, адрес сервера — сохраняется между запусками), журнал событий |
 | **Push-уведомления** | уведомления об ошибках роботов |
-
-## 📸 Скриншоты
 
 ## 🏗 Архитектура
 
@@ -179,7 +177,7 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python agent.py --session mysession
 
 ## 🗺 Roadmap
 
-### **1 Этап**
+### 1 Этап
 
 - [x] Список роботов: состояние, заряд, бейдж ошибок
 - [x] Дашборд робота: прогресс, конкретизация ошибок
@@ -188,13 +186,13 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python agent.py --session mysession
 - [x] Инженерное меню: настройки, журнал событий
 - [x] История сессий уборок
 
-### **2 Этап**
+### 2 Этап
 
 - [x] Статистика за период + график
 - [x] Просмотр карты: план, зоны плана, позиция робота
 - [x] Предпросмотр плана уборки на карте
 
-### **3 Этап**
+### 3 Этап
 
 - [x] Редактор планов (зоны тапами по сетке)
 - [x] Офлайн-кэш телеметрии и сессий (Room)

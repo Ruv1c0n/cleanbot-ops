@@ -20,6 +20,7 @@
 Состояния (`state`): `IDLE | CLEANING | PAUSED | RETURNING | CHARGING | ERROR`.
 Коды ошибок (`error`): `STUCK`, `BRUSH_JAMMED`, `TANK_FULL`, `SENSOR_FAULT`, `LOW_BATTERY`.
 
-Симуляция: в `CLEANING` заряд -1%/тик, прогресс +2%/тик; при заряде <=15% —
-принудительный `RETURNING`; при прогрессе 100% — `RETURNING`; в `CHARGING`
-заряд +3%/тик до 100%.
+Симуляция: в `CLEANING` заряд -1%/тик; движение по маршруту «змейкой» по
+клеткам зон плана — одна клетка за тик, `progress` = доля пройденных клеток
+маршрута; при заряде <=15% — принудительный `RETURNING`; при прогрессе 100% —
+`RETURNING`; в `CHARGING` заряд +3%/тик до 100%.

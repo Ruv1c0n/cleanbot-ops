@@ -223,6 +223,21 @@ def test_search_docs_no_results_plain_string(docs_ws):
     assert "ничего не найдено" in out
 
 
+def test_search_docs_word_boundaries(tmp_path, monkeypatch):
+    """Подсчёт по границам слова, а не по подстроке: «планировщик» не должен
+    находиться по запросу «план», а целое слово «план» — должен."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text(
+        "Тут описан планировщик задач.\n\n"
+        "Здесь подробно разобран план уборки.\n",
+        encoding="utf-8")
+    monkeypatch.setattr(context, "WORKSPACE", tmp_path)
+    out = search_docs("план")
+    assert "планировщик" not in out            # substring-матч больше не срабатывает
+    assert "план уборки" in out                # целое слово находится
+
+
 # ---------- safe_path ----------
 
 def test_safe_path_escape_raises(tmp_path, monkeypatch):

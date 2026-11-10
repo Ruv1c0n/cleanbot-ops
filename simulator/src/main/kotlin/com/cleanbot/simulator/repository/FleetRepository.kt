@@ -13,6 +13,7 @@ import java.time.Instant
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
@@ -73,10 +74,13 @@ class FleetRepository(private val scope: CoroutineScope) {
 
     fun getSchedule(robotId: String): List<Schedule>? = schedules[robotId]
 
-    fun replaceSchedule(robotId: String, entries: List<Schedule>): Boolean {
-        if (!schedules.containsKey(robotId)) return false
+    /** Заменяет расписание целиком. Возвращает null при успехе или текст ошибки валидации. */
+    fun replaceSchedule(robotId: String, entries: List<Schedule>): String? {
+        if (!schedules.containsKey(robotId)) return "Неизвестный робот: $robotId"
+        val error = validateScheduleEntries(robotId, entries)
+        if (error != null) return error
         schedules[robotId] = entries.toMutableList()
-        return true
+        return null
     }
 
     fun getPlan(robotId: String): CleaningPlan? = plans[robotId]
@@ -93,8 +97,11 @@ class FleetRepository(private val scope: CoroutineScope) {
     }
 
     fun getSessions(robotId: String, from: Instant?, to: Instant?): List<Session>? {
-        val all = sessions[robotId] ?: return null
-        return all.filter { s ->
+        val list = sessions[robotId] ?: return null
+        // Снимок под тем же локом, что и addSession: корутина тика может добавить
+        // сессию прямо во время итерации здесь — иначе ConcurrentModificationException.
+        val snapshot = synchronized(list) { list.toList() }
+        return snapshot.filter { s ->
             val started = Instant.parse(s.startedAt)
             (from == null || !started.isBefore(from)) && (to == null || !started.isAfter(to))
         }.sortedByDescending { it.startedAt }
@@ -161,25 +168,28 @@ class FleetRepository(private val scope: CoroutineScope) {
     }
 
     /**
-     * Автозапуск по расписанию: в минуту срабатывания (день недели + "HH:mm")
-     * роботу в IDLE отправляется scheduledStart с mode из записи.
+     * Автозапуск по расписанию: в минуту срабатывания (день недели + "HH:mm", локальная
+     * таймзона сервера) каждой записи срабатывания даётся попытка scheduledStart.
      * lastScheduleFire не даёт сработать повторно в ту же минуту (цикл тикает чаще).
      */
     fun checkSchedules(now: LocalDateTime = LocalDateTime.now()) {
         val day = now.dayOfWeek.value
-        val time = now.format(DateTimeFormatter.ofPattern("HH:mm"))
+        val time = now.format(DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT))
         val key = "$day/$time"
         robots.forEach { robot ->
             val due = dueScheduleEntries(schedules[robot.id].orEmpty(), day, time)
             if (due.isEmpty() || lastScheduleFire[robot.id] == key) return@forEach
             lastScheduleFire[robot.id] = key
-            val mode = due.first().mode
-            scope.launch {
-                val response = robot.scheduledStart(mode, UUID.randomUUID().toString())
-                if (response.accepted) {
-                    appendLog(robot.id, "INFO", "Запуск по расписанию ($day, $time): mode=$mode")
-                } else {
-                    appendLog(robot.id, "WARN", "Расписание ($day, $time) пропущено: ${response.reason}")
+            // Несколько записей в одну минуту: каждая получает свою попытку старта,
+            // вторая не теряется молча (не-IDLE/пустой план → WARN «пропущено»).
+            due.forEach { entry ->
+                scope.launch {
+                    val response = robot.scheduledStart(entry.mode, UUID.randomUUID().toString())
+                    if (response.accepted) {
+                        appendLog(robot.id, "INFO", "Запуск по расписанию ($day, $time): mode=${entry.mode}")
+                    } else {
+                        appendLog(robot.id, "WARN", "Расписание ($day, $time) пропущено: ${response.reason}")
+                    }
                 }
             }
         }
@@ -248,6 +258,36 @@ fun validatePlan(plan: CleaningPlan): String? {
                 return "Клетка (${cell.x}, ${cell.y}) вне сетки $GRID_WIDTH×$GRID_HEIGHT"
             }
             if (!seen.add(cell)) return "Дублирующаяся клетка (${cell.x}, ${cell.y})"
+        }
+    }
+    return null
+}
+
+/** Режимы уборки, допустимые в расписании (тот же набор, что в app и дефолтных данных). */
+private val VALID_SCHEDULE_MODES = setOf("dry_sweep", "wet_mopping")
+
+/** Время записи расписания: "HH:mm", часы 00–23, минуты 00–59. */
+private val SCHEDULE_TIME_REGEX = Regex("""^([01]\d|2[0-3]):[0-5]\d$""")
+
+/**
+ * Валидация расписания: день недели 1..7 (ISO, пн=1), время "HH:mm", режим из допустимого
+ * набора, robotId каждой записи совпадает с id робота в пути (иначе запись запускала бы
+ * чужого робота). Возвращает текст ошибки или null, если расписание корректно.
+ */
+fun validateScheduleEntries(robotId: String, entries: List<Schedule>): String? {
+    entries.forEachIndexed { index, entry ->
+        val label = "Запись #${index + 1}"
+        if (entry.dayOfWeek !in 1..7) {
+            return "$label: dayOfWeek должен быть в диапазоне 1..7 (пн=1), получено ${entry.dayOfWeek}"
+        }
+        if (!SCHEDULE_TIME_REGEX.matches(entry.time)) {
+            return "$label: время должно быть в формате HH:mm (00:00–23:59), получено \"${entry.time}\""
+        }
+        if (entry.mode !in VALID_SCHEDULE_MODES) {
+            return "$label: режим должен быть одним из ${VALID_SCHEDULE_MODES.joinToString()}, получено \"${entry.mode}\""
+        }
+        if (entry.robotId != robotId) {
+            return "$label: robotId в записи (${entry.robotId}) не совпадает с id в пути ($robotId)"
         }
     }
     return null

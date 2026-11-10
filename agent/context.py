@@ -73,6 +73,10 @@ def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
         while tail and tail[0]["role"] == "system":
             old_memory.append(tail.pop(0))
         summary = summarize_fn(old_memory + dropped)
+        # Размер нового summary против бюджета НЕ перепроверяется: сжатие
+        # однопроходное — осознанное упрощение лабы; вход summarize ограничен
+        # 4000 символами в agent.py, так что переполнение после сжатия
+        # практически невозможно.
         folded = f" (+{len(old_memory)} старой памяти)" if old_memory else ""
         print(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога"
               f"{folded}; {est} -> {estimate_tokens(head + tail, tools)} усл. токенов]")
@@ -110,7 +114,10 @@ def search_docs(query: str, limit: int = 3) -> str:
                       path.read_text(encoding="utf-8").split("\n\n") if p.strip()]
         for para in paragraphs:
             low = para.lower()
-            score = sum(low.count(w) for w in words)
+            # вхождения слова целиком (по границам слова), а не подстроки:
+            # «план» не должен находить «планировщик»
+            score = sum(len(re.findall(r"\b" + re.escape(w) + r"\b", low))
+                        for w in words)
             if score:
                 scored.append((score, path.name, para))
     if not scored:
