@@ -41,6 +41,7 @@ Android console for industrial cleaning robot fleets — live telemetry, remote 
 | **Офлайн-кэш** | телеметрия и сессии хранятся локально (Room), доступны без сети |
 | **Инженерное меню** | настройки робота (имя, адрес сервера — сохраняется между запусками), журнал событий |
 | **Push-уведомления** | уведомления об ошибках роботов |
+| **Темы** | тёмная и светлая темы, Material You dynamic color (Android 12+) |
 
 ## 🖼 Скриншоты
 
@@ -65,6 +66,11 @@ Android console for industrial cleaning robot fleets — live telemetry, remote 
   <tr>
     <td align="center"><img src="docs/screenshots/10-notification.png" width="260" alt="Push-уведомление"/><br><sub><b>Push-уведомление</b> — авария робота</sub></td>
     <td align="center"><img src="docs/screenshots/11-error-state.png" width="260" alt="Конкретизация ошибки"/><br><sub><b>Ошибка</b> — конкретизация и сброс</sub></td>
+    <td align="center"><img src="docs/screenshots/12-dark-theme.png" width="260" alt="Тёмная тема"/><br><sub><b>Тёмная тема</b> — Material You, dynamic color</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/13-offline.png" width="260" alt="Оффлайн-стейт"/><br><sub><b>Оффлайн-стейт</b> — понятное состояние и «Повторить»</sub></td>
+    <td></td>
     <td></td>
   </tr>
 </table>
