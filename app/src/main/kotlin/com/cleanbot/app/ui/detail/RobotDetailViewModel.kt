@@ -72,10 +72,15 @@ class RobotDetailViewModel(
 
     fun sendCommand(command: String) {
         viewModelScope.launch {
-            val response = repository.sendCommand(robotId, command)
-            if (!response.accepted) {
-                _lastError.value = "Команда отклонена: ${response.reason}"
-            }
+            runCatching { repository.sendCommand(robotId, command) }
+                .onSuccess { response ->
+                    if (!response.accepted) {
+                        _lastError.value = "Команда отклонена: ${response.reason}"
+                    }
+                }
+                .onFailure {
+                    _lastError.value = "Команда не отправлена: ${it.message ?: "нет связи с сервером"}"
+                }
         }
     }
 
