@@ -24,7 +24,12 @@ class FleetRepositoryScheduleTest {
 
     // Unconfined: launch внутри checkSchedules выполняется синхронно,
     // состояние и лог после вызова детерминированы.
-    private fun repo() = FleetRepository(CoroutineScope(Dispatchers.Unconfined + SupervisorJob()))
+    // faultChance = 0.0: штатная авария (~1%/тик уборки) уводит робота в ERROR,
+    // и runToIdle периодически не дожидается IDLE — так CI упал на 2026-11-10.
+    private fun repo() = FleetRepository(
+        CoroutineScope(Dispatchers.Unconfined + SupervisorJob()),
+        faultChance = 0.0
+    )
 
     private fun tinyPlan() = CleaningPlan(
         GRID_WIDTH, GRID_HEIGHT,
