@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.getValue
@@ -27,6 +28,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Edge-to-edge (рыночный стандарт Android 15+): контент рисуется под
+        // системными барами, инсетты откусывают Scaffold-ы на экранах.
+        enableEdgeToEdge()
         requestNotificationPermissionIfNeeded()
         pendingRobotId = intent?.getStringExtra(EXTRA_ROBOT_ID)
         setContent {
