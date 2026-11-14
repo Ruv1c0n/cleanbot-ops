@@ -32,7 +32,7 @@ EMBED_API_KEY = os.getenv("EMBED_API_KEY", "ollama")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 
 # порог «похожести»: у разных моделей разный масштаб косинуса
-MIN_SCORE = float(os.getenv("MIN_SCORE", "0.40"))
+MIN_SCORE = float(os.getenv("MIN_SCORE", "0.45"))
 
 CHUNK_SIZE = 800          # окно символов для длинных разделов
 CHUNK_OVERLAP = 150       # перекрытие соседних окон
