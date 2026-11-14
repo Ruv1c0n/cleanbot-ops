@@ -27,3 +27,29 @@ def test_validate_chat():
     assert webui.validate_chat({"session": "web", "message": "   "}) == \
         "пустое сообщение"
     assert webui.validate_chat({"session": "web"}) == "пустое сообщение"
+
+
+# ---------- Origin/Host: защита от DNS rebinding и «простых» POST ----------
+# находка ревью lab4-check: сервер не проверял Host/Origin — любой открытый
+# сайт мог слать POST /api/chat (text/plain проходит без preflight)
+
+def test_origin_host_check():
+    # обычные запросы GUI и curl без Origin проходят
+    assert webui.origin_host_check("localhost:8765", None) is None
+    assert webui.origin_host_check("127.0.0.1:8765", "http://localhost:8765") is None
+    assert webui.origin_host_check("localhost", None) is None
+    assert webui.origin_host_check("[::1]:8765", None) is None
+    # DNS rebinding: чужой Host
+    assert webui.origin_host_check("attacker.com", None) is not None
+    assert webui.origin_host_check(None, None) is not None
+    # «простой» POST с внешнего сайта: Origin не localhost
+    assert webui.origin_host_check("localhost:8765", "http://evil.com") is not None
+    assert webui.origin_host_check("localhost:8765", "https://evil.com:443/x") is not None
+    assert webui.origin_host_check("localhost:8765", "null") is not None
+    assert webui.origin_host_check("localhost:8765", "") is None  # пустой = отсутствие
+
+
+def test_webui_disables_interactive_writes():
+    # webui на import выключает input()-подтверждение write_file:
+    # иначе POST /api/chat зависает навсегда
+    assert webui.agent.CONFIRM_WRITES is False

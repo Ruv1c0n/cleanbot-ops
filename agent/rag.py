@@ -21,13 +21,13 @@ from openai import OpenAI
 
 # общий lexical-скоринг с keyword-поиском лаб. 3 (context.py) — один
 # общий scoring, а не копия, чтобы гибрид всегда совпадал с keyword;
-# wrap_docs/sanitize_fragment — рамка данных и чистка псевдоинструкций (P1)
-from context import lex_score, query_words, sanitize_fragment, wrap_docs
+# wrap_docs/sanitize_fragment — рамка данных и чистка псевдоинструкций (P1);
+# DOCS_DIR — путь к корпусу из context.py (реэкспорт: тесты rag_env
+# monkeypatchят rag.DOCS_DIR, функции ниже читают этот модульный глобал)
+from context import DOCS_DIR, lex_score, query_words, sanitize_fragment, wrap_docs
 
 load_dotenv()
 
-WORKSPACE = (Path(__file__).parent / "workspace").resolve()
-DOCS_DIR = WORKSPACE / "docs"
 INDEX_DIR = Path(__file__).parent / "index"          # вне песочницы: агент
 INDEX_FILE = INDEX_DIR / "docs_index.json"           # не затрёт через write_file
 

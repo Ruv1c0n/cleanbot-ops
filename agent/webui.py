@@ -18,13 +18,54 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import agent
+
+# write_file подтверждает запись через input(), но stdout webui перехвачен
+# redirect_stdout: промпт уходит в буфер, POST /api/chat висит вечно, а ввод
+# в консоли сервера «слепо» авторизует запись без показанного превью
+# (находка ревью). В веб-режиме подтверждения нет — write_file сразу
+# возвращает отказ; консольный агент работает как раньше
+agent.CONFIRM_WRITES = False
 
 HTML_FILE = Path(__file__).parent / "webui.html"
 SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 chat_lock = threading.Lock()
 backend_ready = False
+
+# сервер слушает только 127.0.0.1 — запросы с этих хостов «свои».
+# ::1 включён: на Windows localhost может резолвиться в IPv6
+ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+
+
+def _hostname(netloc: str) -> str:
+    """Хост из authority без порта; IPv6 в скобках сохраняет их."""
+    netloc = netloc.lower()
+    if netloc.startswith("["):
+        return netloc.partition("]")[0] + "]"
+    return netloc.partition(":")[0]
+
+
+def origin_host_check(host: str | None, origin: str | None) -> str | None:
+    """Проверка заголовков запроса. None — можно обрабатывать; строка —
+    причина отказа 403 (проверяется ДО чтения тела).
+
+    Host — только localhost/127.0.0.1/[::1]: отсекает DNS rebinding —
+    запрос, пришедший через вредоносный домен, несёт Host attacker.com.
+    Origin: отсутствие разрешено (curl и переход по ссылке его не шлют);
+    непустой должен указывать на localhost — «простой» POST (text/plain)
+    с внешнего сайта проходит без CORS-preflight и несёт Origin исходной
+    страницы. Порт не проверяется: угроза — внешние сайты и rebinding,
+    а не другие процессы того же локального пользователя."""
+    if not host or _hostname(host) not in ALLOWED_HOSTS:
+        return f"Host {host!r} не localhost — возможен DNS rebinding"
+    if origin:
+        parsed = urlsplit(origin)
+        if parsed.scheme not in ("http", "https") \
+                or _hostname(parsed.netloc) not in ALLOWED_HOSTS:
+            return f"Origin {origin!r} не localhost"
+    return None
 
 
 def validate_chat(payload: dict) -> str | None:
@@ -58,7 +99,18 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
+    def _deny_foreign(self) -> bool:
+        """403 для запросов с чужим Host/Origin (до чтения тела)."""
+        denied = origin_host_check(self.headers.get("Host"),
+                                   self.headers.get("Origin"))
+        if denied:
+            self._json(403, {"error": denied})
+            return True
+        return False
+
     def do_GET(self):
+        if self._deny_foreign():
+            return
         if self.path == "/":
             self._send(200, HTML_FILE.read_bytes(), "text/html; charset=utf-8")
         elif self.path == "/api/info":
@@ -73,6 +125,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "не найдено", "text/plain; charset=utf-8")
 
     def do_POST(self):
+        if self._deny_foreign():
+            return          # 403 до разбора тела — тело не читается вовсе
         if self.path != "/api/chat":
             self._send(404, "не найдено", "text/plain; charset=utf-8")
             return
