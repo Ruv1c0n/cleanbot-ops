@@ -9,7 +9,7 @@ hit_at_k — доля вопросов, для которых нужный фа�
 import re
 
 from context import search_docs as keyword_search_docs
-from rag import vector_search, load_or_build_index
+from rag import vector_search, hybrid_search, load_or_build_index
 
 # (вопрос, файл с ответом, перефраз?) — формулировки не совпадают с текстом
 # документов дословно; Questions 1-5 — перефраз/синонимы, 6-10 — точные
@@ -30,7 +30,7 @@ QUESTIONS = [
 
 def _files(result: str) -> list[str]:
     """Имена файлов из результата поиска, в порядке выдачи. Форматы:
-    keyword — «1. name (score=…)», vector — «1. [file § title] cos=…»."""
+    keyword — «1. name (score=…)», vector/hybrid — «1. [file § …] …»."""
     kw = re.findall(r"^\d+\. (\S+) \(", result, re.M)
     vec = re.findall(r"^\d+\. \[([^\s\]]+) §", result, re.M)
     return kw or vec
@@ -48,18 +48,23 @@ def hit_at_k(search, k: int) -> float:
 
 if __name__ == "__main__":
     load_or_build_index()                    # чтобы лог был чистым
-    kw_hits, vec_hits = [], []
+    kw_hits, vec_hits, hyb_hits = [], [], []
     for n, (question, expected, paraphrase) in enumerate(QUESTIONS, 1):
         kw_files = _files(keyword_search_docs(question, limit=3))
         vec_files = _files(vector_search(question, limit=3))
+        hyb_files = _files(hybrid_search(question, limit=3))
         kw_hits.append(expected in kw_files[:3])
         vec_hits.append(expected in vec_files[:3])
+        hyb_hits.append(expected in hyb_files[:3])
         tag = "перефраз" if paraphrase else "точный"
         print(f"| {n} | {question} | {expected} | {tag} "
               f"| {'+' if kw_hits[-1] else '-'} "
-              f"| {'+' if vec_hits[-1] else '-'} |")
+              f"| {'+' if vec_hits[-1] else '-'} "
+              f"| {'+' if hyb_hits[-1] else '-'} |")
     print()
     print(f"hit@1: keyword={hit_at_k(keyword_search_docs, 1):.0%} "
-          f"vector={hit_at_k(vector_search, 1):.0%}")
+          f"vector={hit_at_k(vector_search, 1):.0%} "
+          f"hybrid={hit_at_k(hybrid_search, 1):.0%}")
     print(f"hit@3: keyword={hit_at_k(keyword_search_docs, 3):.0%} "
-          f"vector={hit_at_k(vector_search, 3):.0%}")
+          f"vector={hit_at_k(vector_search, 3):.0%} "
+          f"hybrid={hit_at_k(hybrid_search, 3):.0%}")

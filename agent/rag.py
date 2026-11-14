@@ -18,6 +18,9 @@ import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
+# _stem — общий lexical-скоринг с keyword-поиском лаб. 3 (context.py)
+from context import _stem
+
 load_dotenv()
 
 WORKSPACE = (Path(__file__).parent / "workspace").resolve()
@@ -167,12 +170,72 @@ def vector_search(query: str, limit: int = 3) -> str:
     )
 
 
+# ---------- бонус: гибридный поиск (reciprocal rank fusion) ----------
+def _keyword_chunk_scores(query: str, chunks: list[dict]) -> list[float]:
+    """Тот же lexical-скоринг, что у keyword_search_docs из context.py
+    (точные слова + словоформы через _stem), но по фрагментам индекса —
+    чтобы ранги keyword и vector были сопоставимы (одна гранулярность)."""
+    words = [w for w in re.findall(r"\w+", str(query).lower()) if len(w) > 2]
+    scores = []
+    for c in chunks:
+        low = c["text"].lower() + " " + c["title"].lower()
+        score = 0.0
+        for w in words:
+            score += len(re.findall(r"\b" + re.escape(w) + r"\b", low))
+            stem = _stem(w)
+            if stem:
+                score += 0.4 * len(
+                    re.findall(r"\b" + re.escape(stem) + r"\w{0,2}\b", low))
+        scores.append(score)
+    return scores
+
+
+RRF_K = 60              # константа RRF: гасит вклад верхушки рейтинга
+FUSE_DEPTH = 10         # глубина списков, которые сливаем
+
+
+def hybrid_search(query: str, limit: int = 3) -> str:
+    """Гибрид: ранги keyword-скоринга и векторного поиска объединяются
+    reciprocal rank fusion — rrf(d) = Σ 1/(RRF_K + rank_i(d)). Ошибка
+    возвращается, только если ОБОА поиска не нашли ничего (keyword дал
+    нули, вектор — ниже порога): точный термин ловит keyword даже при
+    низком косинусе, перефраз — вектор."""
+    if not str(query).strip():
+        raise ValueError("query не может быть пустым")
+    limit = max(1, min(int(limit), 5))
+    index = load_or_build_index()
+    if not index["chunks"]:
+        return "ОШИБКА: docs/ пуста — нечего искать."
+    kw_scores = _keyword_chunk_scores(query, index["chunks"])
+    kw_rank = sorted(range(len(kw_scores)),
+                     key=lambda i: -kw_scores[i])[:FUSE_DEPTH]
+    qvec = embed([str(query)])[0]
+    vec_scores = [cosine(qvec, c["vector"]) for c in index["chunks"]]
+    vec_rank = sorted(range(len(vec_scores)),
+                      key=lambda i: -vec_scores[i])[:FUSE_DEPTH]
+    if kw_scores[kw_rank[0]] == 0 and vec_scores[vec_rank[0]] < MIN_SCORE:
+        return ("ОШИБКА: нет похожих фрагментов (keyword — нули, лучший "
+                f"косинус {vec_scores[vec_rank[0]]:.2f} ниже порога "
+                f"{MIN_SCORE:.2f}).")
+    rrf = {}
+    for rank, i in enumerate(kw_rank, 1):        # ранг с 1: важнее верхушки
+        rrf[i] = rrf.get(i, 0.0) + 1.0 / (RRF_K + rank)
+    for rank, i in enumerate(vec_rank, 1):
+        rrf[i] = rrf.get(i, 0.0) + 1.0 / (RRF_K + rank)
+    ordered = sorted(rrf, key=lambda i: -rrf[i])[:limit]
+    return "\n\n".join(
+        f"{n}. [{index['chunks'][i]['file']} § {index['chunks'][i]['title']}] "
+        f"rrf={rrf[i]:.4f}: {index['chunks'][i]['text'][:400]}"
+        for n, i in enumerate(ordered, 1)
+    )
+
+
 # ---------- проверка шага 1: 6 пар фраз ----------
 if __name__ == "__main__":
     phrases = ["удалить аккаунт", "стереть профиль",          # 1-2: синонимы
                "передать команду роботу", "отправить команду роботу",
                "сбросить ошибку", "сбросить настройку",        # 3-4: слово общее
-               "план уборки", "план тренировок",               # 3-4: слово общее
+               "план уборки", "план тренировок",
                "расписание уборки", "погода в Москве",         # 5-6: не связаны
                "история сессий", "размер сетки плана"]
     vecs = embed(phrases)
