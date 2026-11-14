@@ -128,6 +128,16 @@
   .ib:hover { color: var(--accent); border-color: var(--accent); }
   .ib:disabled, .ib:disabled:hover { opacity: .35; cursor: default; color: var(--dim); border-color: var(--line); }
   .ib.danger:hover { color: #ff7b72; border-color: #ff7b72; }
+  /* кнопка темы — в акцентной гамме, а не браузерный белый дефолт:
+     без собственных стилей она рисовалась системной белой кнопкой */
+  #theme {
+    flex: none; cursor: pointer; font-family: var(--mono); font-size: 14px;
+    color: var(--accent); background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    border-radius: 9px; padding: 5px 10px; line-height: 1.25;
+    transition: color .18s, border-color .18s, background .18s;
+  }
+  #theme:hover { border-color: var(--accent); }
   .accent-btn {
     flex: none; cursor: pointer; font-family: var(--mono); font-size: 11px;
     letter-spacing: .08em; color: var(--accent-ink); background: var(--accent);
@@ -412,8 +422,7 @@
 <header>
   <button id="burger" class="ib" aria-label="показать или скрыть список чатов" title="чаты">≡</button>
   <div class="brand">
-    <b>cleanbot<span class="accent">·</span>ops <span class="accent">//</span> агент</b>
-    <span>agent console · лаб. 4</span>
+    <b>cleanbot<span class="accent">·</span>ops</b>
   </div>
   <div class="chip model" id="model-chip" data-state="off">
     <i class="dot"></i>
