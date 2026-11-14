@@ -347,4 +347,7 @@ rrf(d) = Σ 1/(60 + rank_i(d)),  i ∈ {keyword, vector}, глубина спи�
   правила (для батарейки инъекций), пишет в сессию с суффиксом `-baseline`,
   чтобы guarded/baseline история не подмешивалась друг другу;
 - `python -c "from rag import hybrid_search; print(hybrid_search('...'))"`
-  — гибридный поиск (бонус).
+  — гибридный поиск (бонус);
+- `python webui.py [--port 8765]` — веб-чат агента в браузере
+  (http://localhost:8765; вне ТЗ лабы: stdlib-сервер + `webui.html`,
+  та же логика agent.py, stdout цикла уходит в «телеметрию шага»).
