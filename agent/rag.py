@@ -34,8 +34,10 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 # порог «похожести»: у разных моделей разный масштаб косинуса
 MIN_SCORE = float(os.getenv("MIN_SCORE", "0.45"))
 
-CHUNK_SIZE = 800          # окно символов для длинных разделов
-CHUNK_OVERLAP = 150       # перекрытие соседних окон
+# размер окна и перекрытие настраиваются окружением (эксперименты шага 6:
+# CHUNK_SIZE=300/1500 python eval_search.py)
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
 
 
 def _embed_client() -> OpenAI:
