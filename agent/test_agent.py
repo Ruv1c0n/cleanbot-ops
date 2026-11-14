@@ -499,6 +499,8 @@ def test_system_prompt_envelope_from_constants():
 
 from types import SimpleNamespace
 
+import json
+
 import openai
 
 
@@ -791,3 +793,25 @@ def test_chat_for_fallback_keeps_globals(monkeypatch):
     monkeypatch.setattr(agent, "FALLBACK", {**agent.FALLBACK, "api_key": None})
     with pytest.raises(openai.APIConnectionError):
         agent.chat_for(flaky, "m", agent.LOCAL, messages=[])
+
+
+def test_run_agent_stream_system_note_in_request_not_history(sessions_ws):
+    # reminder в последнем user-сообщении копии запроса: маленькие модели
+    # игнорируют system[0] при длинной разноязычной истории, а system в
+    # конце запроса часть шаблонов запрещает — поэтому note вклеивается
+    # в user-копию, сохранённая история не мутируется
+    client, calls = make_stream_client(
+        [content_chunk("Hello", finish="stop"), usage_chunk(10, 5)])
+    msgs = [{"role": "system", "content": "Отвечай только на английском"},
+            user("привет")]
+    note = "СИСТЕМНОЕ ПРАВИЛО: Отвечай только на английском языке"
+    res = agent.run_agent_stream(msgs, on_log=lambda *_: None,
+                                 on_delta=lambda *_: None, session_id="sn",
+                                 client=client, model_name="fake-model",
+                                 backend=agent.LOCAL, system_note=note)
+    assert res["answer"] == "Hello"
+    req_msgs = calls[0]["messages"]
+    assert req_msgs[-1]["content"].endswith(note)   # note ушла в запрос
+    assert msgs[1]["content"] == "привет"           # user-история не тронута
+    saved = json.loads((sessions_ws / "sn.json").read_text(encoding="utf-8"))
+    assert [m for m in saved if m["role"] == "user"][-1]["content"] == "привет"

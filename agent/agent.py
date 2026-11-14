@@ -584,7 +584,8 @@ def accumulate_tool_call_delta(acc: dict, delta_tool_calls) -> dict:
 
 def run_agent_stream(messages: list, *, on_delta, on_log=None,
                      cancel_event=None, session_id=None, client=None,
-                     model_name=None, backend=None, gen_kwargs=None) -> dict:
+                     model_name=None, backend=None, gen_kwargs=None,
+                     system_note=None) -> dict:
     """Стриминговый twin run_agent: каждый вызов модели stream=True, дельты
     контента уходят в on_delta по мере появления, строки цикла — в on_log
     (None -> print: webui в не-стрим режиме перехватывает stdout, и log
@@ -595,6 +596,14 @@ def run_agent_stream(messages: list, *, on_delta, on_log=None,
     cancel_event проверяется до каждого шага и после каждой дельты: при
     отмене недописанный assistant в историю НЕ попадает («история как есть»),
     накопленный текст возвращается для показа «остановлено».
+
+    system_note — короткое напоминание, вклеиваемое в ПОСЛЕДНЕЕ user-
+    сообщение копии запроса на каждом шаге. Нужно из-за recency-смещения
+    маленьких моделей: кастомный system-промпт в messages[0] они игнорируют,
+    когда история длинная и на другом языке, а system в конце запроса часть
+    шаблонов (qwen38-turbo) запрещает — «System message must be at the
+    beginning». Копия словаря заменяется в списке запроса, сохранённая
+    история не мутируется.
 
     Возвращает {"answer", "model", "fallback_used", "usage", "stopped"}."""
     log = on_log if on_log is not None else print
@@ -628,6 +637,14 @@ def run_agent_stream(messages: list, *, on_delta, on_log=None,
             break
         req = ensure_context_budget(list(messages), CONTEXT_BUDGET, STRATEGY,
                                     TOOLS, summarize_fn=summarize)
+        if system_note:
+            # reminder в последнем user-сообщении копии: замена словаря в
+            # списке запроса не задевает сохранённую историю
+            for i in range(len(req) - 1, -1, -1):
+                if req[i].get("role") == "user":
+                    req[i] = {**req[i],
+                              "content": f"{req[i].get('content', '')}\n\n{system_note}"}
+                    break
         est = estimate_tokens(req, TOOLS)
         call_kwargs = dict(messages=req, tools=TOOLS, stream=True,
                            stream_options={"include_usage": True}, **gen)

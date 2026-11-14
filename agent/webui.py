@@ -445,20 +445,33 @@ def configure_web_mode() -> None:
 def _prepare_chat(session_id: str, message: str, model_id=None,
                   regenerate: bool = False):
     """Общая подготовка стрим/не-стрим чата (ВЫЗЫВАТЬ ПОД ЛОКОМ СЕССИИ):
-    (messages, client, model_name, backend, gen_kwargs). Кастомная модель
-    резолвится per-request и не мутирует глобальные active/client —
-    консольный сценарий продолжает работать с дефолтом. Настройки из meta
-    (system, temperature, max_tokens) применяются к запросу."""
+    (messages, client, model_name, backend, gen_kwargs, system_note).
+    Кастомная модель резолвится per-request и не мутирует глобальные
+    active/client — консольный сценарий продолжает работать с дефолтом.
+    Модель из meta — фоллбек, когда клиент не прислал model (клиент шлёт
+    свой выбор каждый раз, но «модель чата» должна жить и без него).
+    Настройки из meta (system, temperature, max_tokens) применяются к
+    запросу; кастомный system дублируется напоминанием в конце запроса —
+    маленькие модели игнорируют system[0] при длинной разноязычной истории
+    (проверено: gpt-oss слушается, qwen38-turbo — нет)."""
     _ensure_backend()
+    meta = agent.load_meta(session_id)
     if model_id:
         try:
             client_, model_name, backend = agent.resolve_model(model_id)
         except LookupError as e:
             raise ChatError(str(e)) from e
+    elif meta.get("model"):
+        # сохранённая модель чата; исчезнувшую из списков молча заменяем
+        # дефолтом — чат не должен ломаться из-за удаления модели с бэкенда
+        try:
+            client_, model_name, backend = agent.resolve_model(meta["model"])
+        except LookupError:
+            client_, model_name, backend = \
+                agent.client, agent.active["model"], agent.active
     else:
         client_, model_name, backend = \
             agent.client, agent.active["model"], agent.active
-    meta = agent.load_meta(session_id)
     system_prompt = meta.get("system") or agent.SYSTEM_PROMPT
     messages = agent.load_session(session_id, system_prompt)
     if regenerate:
@@ -478,7 +491,11 @@ def _prepare_chat(session_id: str, message: str, model_id=None,
         gen["temperature"] = meta["temperature"]
     if meta.get("max_tokens") is not None:
         gen["max_tokens"] = meta["max_tokens"]
-    return messages, client_, model_name, backend, gen
+    system_note = None
+    if meta.get("system"):
+        system_note = (f"СИСТЕМНОЕ ПРАВИЛО (обязательно, важнее языка "
+                       f"предыдущей истории): {meta['system']}")
+    return messages, client_, model_name, backend, gen, system_note
 
 
 def _remember_model(session_id: str, model_name: str) -> None:
@@ -496,14 +513,14 @@ def chat_once(session_id: str, message: str, model_id=None,
     model/fallback_used/usage. log — все строки stdout (on_log=None ->
     print -> перехват), как и раньше."""
     with session_lock(session_id):
-        messages, client_, model_name, backend, gen = _prepare_chat(
+        messages, client_, model_name, backend, gen, note = _prepare_chat(
             session_id, message, model_id, regenerate)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             result = agent.run_agent_stream(
                 messages, on_delta=lambda text: None, session_id=session_id,
                 client=client_, model_name=model_name, backend=backend,
-                gen_kwargs=gen)
+                gen_kwargs=gen, system_note=note)
         if model_id:
             _remember_model(session_id, model_name)
     return {"answer": result["answer"],
@@ -538,7 +555,7 @@ def chat_stream_events(session_id: str, message: str, model_id=None,
             with _locks_guard:
                 _cancel_events[session_id] = cancel
             try:
-                messages, client_, model_name, backend, gen = _prepare_chat(
+                messages, client_, model_name, backend, gen, note = _prepare_chat(
                     session_id, message, model_id, regenerate)
                 result = agent.run_agent_stream(
                     messages,
@@ -546,7 +563,7 @@ def chat_stream_events(session_id: str, message: str, model_id=None,
                     on_delta=lambda text: q.put(("delta", {"text": text})),
                     cancel_event=cancel, session_id=session_id,
                     client=client_, model_name=model_name, backend=backend,
-                    gen_kwargs=gen)
+                    gen_kwargs=gen, system_note=note)
                 if model_id:
                     _remember_model(session_id, model_name)
                 q.put(("done", {"answer": result["answer"],

@@ -369,7 +369,7 @@ def test_sse_frame_format():
 def test_chat_stream_events_direct(sessions_ws, monkeypatch):
     # генератор вызывается напрямую, без сокета: агент подменён
     monkeypatch.setattr(webui, "_prepare_chat",
-                        lambda *a, **k: ([], None, None, "fake", {}))
+                        lambda *a, **k: ([], None, None, "fake", {}, None))
 
     def fake_run(messages, **kwargs):
         kwargs["on_log"]("[шаг 0]")
@@ -438,8 +438,7 @@ def test_normalize_create_payload_non_dict():
     assert webui.normalize_create_payload({"id": "a"}) == {"id": "a"}
 
 
-def test_chat_stream_events_disconnect_stops_generation(sessions_ws, monkeypatch):
-    # ревью P1: клиент отключился (генератор закрыт) посреди генерации.
+def test_chat_stream_events_disconnect_stops_generation(sessions_ws, monkeypatch):    # ревью P1: клиент отключился (генератор закрыт) посреди генерации.
     # Раньше finally брал «что зарегистрировано сейчас» из реестра — при
     # рассинхроне поколений ловил чужой Event или None -> KeyError в
     # pop_cancel, а генерация продолжалась без остановки («зомби»).
@@ -481,3 +480,50 @@ def test_chat_stream_events_disconnect_stops_generation(sessions_ws, monkeypatch
     # реестр чист: finally снял СВОЙ Event, worker-side pop подстраховался
     with webui._locks_guard:
         assert "dc" not in webui._cancel_events
+
+
+# ---------- фоллбек модели из meta + персона-напоминание (ревью честной
+# проверки 2026-11-15: qwen38-turbo игнорирует system[0] при длинной
+# разноязычной истории, gpt-oss — нет; проверено живьём) ----------
+
+def test_prepare_chat_falls_back_to_meta_model(sessions_ws, monkeypatch):
+    monkeypatch.setattr(webui, "_ensure_backend", lambda: None)
+    make_session("mm", [user_msg("вопрос")], meta={"model": "fake-m"})
+    seen = {}
+
+    def fake_resolve(model_id):
+        seen["id"] = model_id
+        return ("client", model_id, {"model": model_id})
+
+    monkeypatch.setattr(webui.agent, "resolve_model", fake_resolve)
+    _, _, model_name, _, _, _ = webui._prepare_chat("mm", "тест")
+    assert seen["id"] == "fake-m" and model_name == "fake-m"
+
+    # исчезнувшая из списков модель в meta молча заменяется дефолтом —
+    # чат не ломается из-за удаления модели с бэкенда
+    make_session("mm", [user_msg("вопрос")], meta={"model": "no-such"})
+
+    def boom(model_id):
+        raise LookupError("нет такой модели")
+
+    monkeypatch.setattr(webui.agent, "resolve_model", boom)
+    monkeypatch.setattr(webui.agent, "active", {"model": "fake", "base_url": "x"})
+    monkeypatch.setattr(webui.agent, "client", object())
+    _, _, model_name, _, _, _ = webui._prepare_chat("mm", "тест")
+    assert model_name == "fake"
+
+
+def test_prepare_chat_custom_system_returns_note(sessions_ws, monkeypatch):
+    monkeypatch.setattr(webui, "_ensure_backend", lambda: None)
+    monkeypatch.setattr(webui.agent, "active", {"model": "fake", "base_url": "x"})
+    monkeypatch.setattr(webui.agent, "client", object())
+    make_session("persona", [user_msg("вопрос")],
+                 meta={"system": "Отвечай только на английском языке"})
+    messages, _, _, _, _, note = webui._prepare_chat("persona", "привет")
+    assert messages[0] == {"role": "system",
+                           "content": "Отвечай только на английском языке"}
+    assert note is not None and "Отвечай только на английском" in note
+    # дефолтный system — напоминания нет
+    make_session("plain", [user_msg("вопрос")])
+    _, _, _, _, _, note = webui._prepare_chat("plain", "привет")
+    assert note is None
