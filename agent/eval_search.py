@@ -12,7 +12,7 @@ from context import search_docs as keyword_search_docs
 from rag import vector_search, hybrid_search, load_or_build_index
 
 # (вопрос, файл с ответом, перефраз?) — формулировки не совпадают с текстом
-# документов дословно; Questions 1-5 — перефраз/синонимы, 6-10 — точные
+# документов дословно; 1-5 и 9-10 — перефраз/синонимы, 6-8 — точные
 # термины, коды и имена
 QUESTIONS = [
     ("каким словом помечают срочные задачи?", "faq.md", True),

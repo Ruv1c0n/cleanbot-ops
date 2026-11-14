@@ -72,6 +72,11 @@ def chunk_markdown(path: Path, size: int = CHUNK_SIZE,
     разделы — окнами по size символов с перекрытием overlap. У каждого
     фрагмента метаданные file и title; разделы без текста пропускаются."""
     chunks = []
+    # step = size - overlap: overlap >= size даёт step <= 0 — range() падает
+    # или молча выбрасывает весь раздел, поэтому валидируем явно
+    if not 0 < overlap < size:
+        raise ValueError(f"нужен 0 < overlap < size, получено "
+                         f"size={size}, overlap={overlap}")
     # заголовок может быть и в середине окна длинного раздела — режем только
     # по строкам, целиком начинающимся с #
     sections, title = [], ""
@@ -197,7 +202,7 @@ FUSE_DEPTH = 10         # глубина списков, которые слив
 def hybrid_search(query: str, limit: int = 3) -> str:
     """Гибрид: ранги keyword-скоринга и векторного поиска объединяются
     reciprocal rank fusion — rrf(d) = Σ 1/(RRF_K + rank_i(d)). Ошибка
-    возвращается, только если ОБОА поиска не нашли ничего (keyword дал
+    возвращается, только если ОБА поиска не нашли ничего (keyword дал
     нули, вектор — ниже порога): точный термин ловит keyword даже при
     низком косинусе, перефраз — вектор."""
     if not str(query).strip():
