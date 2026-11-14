@@ -20,8 +20,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 # общий lexical-скоринг с keyword-поиском лаб. 3 (context.py) — один
-# общий scoring, а не копия, чтобы гибрид всегда совпадал с keyword
-from context import lex_score, query_words
+# общий scoring, а не копия, чтобы гибрид всегда совпадал с keyword;
+# wrap_docs/sanitize_fragment — рамка данных и чистка псевдоинструкций (P1)
+from context import lex_score, query_words, sanitize_fragment, wrap_docs
 
 load_dotenv()
 
@@ -200,10 +201,11 @@ def vector_search(query: str, limit: int = 3) -> str:
     # порог действует на весь список, а не только на топ-1: иначе при
     # limit=5 контекст разбавляется фрагментами с косинусом ~0
     top = [(score, c) for score, c in scored if score >= MIN_SCORE][:limit]
-    return "\n\n".join(
-        f"{n}. [{c['file']} § {c['title']}] cos={score:.2f}: {c['text'][:400]}"
+    return wrap_docs("\n\n".join(
+        f"{n}. [{c['file']} § {c['title']}] cos={score:.2f}: "
+        f"{sanitize_fragment(c['text'])[:400]}"
         for n, (score, c) in enumerate(top, 1)
-    )
+    ))
 
 
 # ---------- бонус: гибридный поиск (reciprocal rank fusion) ----------
@@ -252,11 +254,11 @@ def hybrid_search(query: str, limit: int = 3) -> str:
     for rank, i in enumerate(vec_rank, 1):
         rrf[i] = rrf.get(i, 0.0) + 1.0 / (RRF_K + rank)
     ordered = sorted(rrf, key=lambda i: -rrf[i])[:limit]
-    return "\n\n".join(
+    return wrap_docs("\n\n".join(
         f"{n}. [{index['chunks'][i]['file']} § {index['chunks'][i]['title']}] "
-        f"rrf={rrf[i]:.4f}: {index['chunks'][i]['text'][:400]}"
+        f"rrf={rrf[i]:.4f}: {sanitize_fragment(index['chunks'][i]['text'])[:400]}"
         for n, i in enumerate(ordered, 1)
-    )
+    ))
 
 
 # ---------- проверка шага 1: 6 пар фраз ----------
