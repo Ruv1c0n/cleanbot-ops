@@ -41,3 +41,6 @@ agent/sessions/*
 !agent/sessions/.gitkeep
 agent/.venv
 __pycache__/
+
+# индекс эмбеддингов лаб. 4: пересобирается из docs/, в git не нужен
+agent/index/
