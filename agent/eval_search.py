@@ -2,7 +2,10 @@
 
 10 вопросов своими словами (не копируя фразы из документов); минимум 4 —
 синонимы/перефраз. Для каждого вопроса указан файл, где лежит ответ.
-hit_at_k — доля вопросов, для которых нужный файл есть в top-k.
+hit@k — доля вопросов, для которых нужный файл есть в top-k. Каждый
+поиск вызывается ровно один раз на вопрос (limit=5), hit@1/hit@3 и
+таблица top-3 считаются с одного прохода — раньше каждый поиск гонялся
+дважды (основной цикл + re-run в hit_at_k).
 
 Запуск: python eval_search.py
 """
@@ -27,44 +30,40 @@ QUESTIONS = [
     ("где переименовать машину и поменять ей адрес сервера?", "settings.md", True),
 ]
 
+SEARCHES = ("keyword", "vector", "hybrid")
+
 
 def _files(result: str) -> list[str]:
     """Имена файлов из результата поиска, в порядке выдачи. Форматы:
     keyword — «1. name (score=…)», vector/hybrid — «1. [file § …] …»."""
     kw = re.findall(r"^\d+\. (\S+) \(", result, re.M)
     vec = re.findall(r"^\d+\. \[([^\s\]]+) §", result, re.M)
-    return kw or vec
-
-
-def hit_at_k(search, k: int) -> float:
-    """Доля вопросов, у которых нужный файл есть в top-k результатах."""
-    hits = 0
-    for question, expected, _ in QUESTIONS:
-        files = _files(search(question, limit=5))[:k]
-        if expected in files:
-            hits += 1
-    return hits / len(QUESTIONS)
+    files = kw or vec
+    # без assert смена формата выдачи превращалась бы в тихий hit@k = 0%
+    assert files, f"не распарсился вывод поиска: {result[:120]!r}"
+    return files
 
 
 if __name__ == "__main__":
     load_or_build_index()                    # чтобы лог был чистым
-    kw_hits, vec_hits, hyb_hits = [], [], []
+    ranked_per_question = []
     for n, (question, expected, paraphrase) in enumerate(QUESTIONS, 1):
-        kw_files = _files(keyword_search_docs(question, limit=3))
-        vec_files = _files(vector_search(question, limit=3))
-        hyb_files = _files(hybrid_search(question, limit=3))
-        kw_hits.append(expected in kw_files[:3])
-        vec_hits.append(expected in vec_files[:3])
-        hyb_hits.append(expected in hyb_files[:3])
+        ranked = {
+            "keyword": _files(keyword_search_docs(question, limit=5)),
+            "vector": _files(vector_search(question, limit=5)),
+            "hybrid": _files(hybrid_search(question, limit=5)),
+        }
+        ranked_per_question.append((expected, ranked))
         tag = "перефраз" if paraphrase else "точный"
-        print(f"| {n} | {question} | {expected} | {tag} "
-              f"| {'+' if kw_hits[-1] else '-'} "
-              f"| {'+' if vec_hits[-1] else '-'} "
-              f"| {'+' if hyb_hits[-1] else '-'} |")
+        marks = " ".join(
+            ("+" if expected in ranked[name][:3] else "-") for name in SEARCHES)
+        print(f"| {n} | {question} | {expected} | {tag} | {marks} |")
     print()
-    print(f"hit@1: keyword={hit_at_k(keyword_search_docs, 1):.0%} "
-          f"vector={hit_at_k(vector_search, 1):.0%} "
-          f"hybrid={hit_at_k(hybrid_search, 1):.0%}")
-    print(f"hit@3: keyword={hit_at_k(keyword_search_docs, 3):.0%} "
-          f"vector={hit_at_k(vector_search, 3):.0%} "
-          f"hybrid={hit_at_k(hybrid_search, 3):.0%}")
+    for k in (1, 3):
+        parts = [
+            f"{name}={sum(expected in ranked[name][:k]
+                          for expected, ranked in ranked_per_question)
+                     / len(ranked_per_question):.0%}"
+            for name in SEARCHES
+        ]
+        print(f"hit@{k}: " + " ".join(parts))

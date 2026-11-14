@@ -1,14 +1,12 @@
 """Юнит-тесты rag.py (лаб. 4). Сеть не нужна: embed подменяется
 детерминированными векторами, индекс кладётся в tmp_path — по тому же
 принципу monkeypatch-на-модуль, что и тесты context.py в test_agent.py."""
-import json
-
 import pytest
 
 import agent  # безопасен без сети: сеть только в select_backend/main
 import rag
-from rag import chunk_markdown, cosine, hybrid_search, load_or_build_index, \
-    vector_search
+from rag import (chunk_markdown, cosine, hybrid_search, load_or_build_index,
+                 vector_search)
 
 
 # ---------- chunk_markdown: окна, перекрытие, метаданные ----------
@@ -88,10 +86,20 @@ def test_index_rebuilt_then_cache_hit(rag_env, capsys):
     assert second["chunks"] == first["chunks"]          # без вызовов модели
 
 
-def test_index_rebuilds_on_model_change(rag_env, capsys):
+def test_index_rebuilds_on_model_change(rag_env, capsys, monkeypatch):
     load_or_build_index(size=800, overlap=150)
     capsys.readouterr()
-    rag.EMBED_MODEL = "other-model"                     # имя модели в хэше
+    monkeypatch.setattr(rag, "EMBED_MODEL", "other-model")   # имя модели в хэше
+    load_or_build_index(size=800, overlap=150)
+    assert "INDEX: rebuilt" in capsys.readouterr().out
+
+
+def test_index_rebuilds_on_schema_version_change(rag_env, capsys, monkeypatch):
+    # правка чанкера при тех же size/overlap не должна обслуживать старый
+    # индекс как cache hit — версия схемы входит в хэш
+    load_or_build_index(size=800, overlap=150)
+    capsys.readouterr()
+    monkeypatch.setattr(rag, "SCHEMA_VERSION", rag.SCHEMA_VERSION + 1)
     load_or_build_index(size=800, overlap=150)
     assert "INDEX: rebuilt" in capsys.readouterr().out
 
@@ -99,6 +107,23 @@ def test_index_rebuilds_on_model_change(rag_env, capsys):
 def test_index_rebuilds_on_corrupt_file(rag_env, capsys):
     rag.INDEX_DIR.mkdir()
     rag.INDEX_FILE.write_text("не json", encoding="utf-8")
+    load_or_build_index(size=800, overlap=150)
+    assert "INDEX: rebuilt" in capsys.readouterr().out
+
+
+def test_index_rebuilds_on_wrong_type_json(rag_env, capsys):
+    # валидный JSON не того типа раньше падал AttributeError на data.get —
+    # восстановление через пересборку должно ловить и это
+    rag.INDEX_DIR.mkdir()
+    rag.INDEX_FILE.write_text("[]", encoding="utf-8")
+    load_or_build_index(size=800, overlap=150)
+    assert "INDEX: rebuilt" in capsys.readouterr().out
+
+
+def test_index_rebuilds_on_bad_utf8(rag_env, capsys):
+    # битая кодировка — ValueError, не OSError: раньше падал traceback-ом
+    rag.INDEX_DIR.mkdir()
+    rag.INDEX_FILE.write_bytes(b"\xff\xfe\x00")
     load_or_build_index(size=800, overlap=150)
     assert "INDEX: rebuilt" in capsys.readouterr().out
 
@@ -117,13 +142,19 @@ def _fake_index(n=6):
 @pytest.fixture
 def vec_env(monkeypatch):
     monkeypatch.setattr(rag, "load_or_build_index", _fake_index)
-    monkeypatch.setattr(rag, "embed", lambda texts: [[1.0] + [0.0] * 5])
+    # запрос по осям 0/1/2: косинусы ≈0.64/0.58/0.51 (все ≥ порога 0.5),
+    # остальные оси — нули; порог режет ровно хвост из трёх нулей
+    monkeypatch.setattr(rag, "embed",
+                        lambda texts: [[1.0, 0.9, 0.8, 0.0, 0.0, 0.0]])
     monkeypatch.setattr(rag, "MIN_SCORE", 0.5)
 
 
 def test_vector_limit_clamped_like_keyword(vec_env):
     assert len(vector_search("запрос", limit=0).split("\n\n")) == 1
-    assert len(vector_search("запрос", limit=99).split("\n\n")) == 5
+    assert len(vector_search("запрос", limit=2).split("\n\n")) == 2
+    # порог MIN_SCORE режет весь список, а не только топ-1: нулевые
+    # косинусы в контекст не попадают даже при limit=99
+    assert len(vector_search("запрос", limit=99).split("\n\n")) == 3
 
 
 def test_vector_error_paths(vec_env, monkeypatch):
@@ -151,6 +182,25 @@ def test_hybrid_error_needs_both_searches_to_fail(monkeypatch):
     monkeypatch.setattr(rag, "MIN_SCORE", 0.5)
     assert hybrid_search("рецепт борща").startswith("ОШИБКА")   # kw нули
     assert "расписание" in hybrid_search("расписание")          # kw > 0
+
+
+def test_hybrid_zero_keyword_chunks_get_no_rrf_boost(monkeypatch):
+    # verified-repro находки ревью: при чистом перефразе (kw-нули у всех)
+    # фрагменты в порядке индекса не должны получать RRF-буст и вытеснять
+    # точное векторное совпадение из топа
+    n = 12
+    chunks = [{"file": f"f{i}.md", "title": f"раздел {i}", "text": f"текст {i}",
+               "vector": [1.0 if j == i else 0.0 for j in range(n)]}
+              for i in range(n)]
+    chunks[0]["vector"] = [0.0] * n                     # идеальный мимо: cos=0
+    chunks[1]["vector"] = [0.0] * n
+    chunks[11]["vector"][0] = 1.0                       # точное совпадение: cos=1
+    monkeypatch.setattr(rag, "load_or_build_index",
+                        lambda: {"hash": "x", "chunks": chunks})
+    monkeypatch.setattr(rag, "embed", lambda texts: [[1.0] + [0.0] * (n - 1)])
+    monkeypatch.setattr(rag, "MIN_SCORE", 0.5)
+    out = hybrid_search("полный перефраз без общих слов")
+    assert out.split("\n\n")[0].startswith("1. [f11.md")   # раньше был f0.md
 
 
 # ---------- стык тулов и реестра ----------

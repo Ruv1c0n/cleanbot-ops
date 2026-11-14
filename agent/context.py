@@ -108,14 +108,36 @@ def _stem(word: str) -> str | None:
     return None
 
 
+def query_words(query: str) -> list[str]:
+    """Значимые слова запроса: регистронезависимо, длина >= 3 символов."""
+    return [w for w in re.findall(r"\w+", str(query).lower()) if len(w) > 2]
+
+
+def lex_score(words: list[str], text: str) -> float:
+    """Lexical-скоринг одного текста по списку значимых слов. Точное слово
+    целиком (по границам слова) — полный вес; плюс словоформы: основа и
+    до 2 букв окончания («задача» находит «задачи/задач»), с весом 0.4,
+    чтобы точное вхождение всегда ранжировалось выше. Хвост длиннее 2 букв —
+    уже другое слово: «план» не находит «планировщик», «задача» — «задание».
+    Один общий скоринг для keyword-поиска и гибрида лаб. 4 (rag.py)."""
+    low = text.lower()
+    score = 0.0
+    for w in words:
+        score += len(re.findall(r"\b" + re.escape(w) + r"\b", low))
+        stem = _stem(w)
+        if stem:
+            score += 0.4 * len(
+                re.findall(r"\b" + re.escape(stem) + r"\w{0,2}\b", low))
+    return score
+
+
 def search_docs(query: str, limit: int = 3) -> str:
     """Keyword-поиск по workspace/docs/. Вне песочницы не выходит: путь
     жёстко задан, пользовательский ввод влияет только на текст запроса."""
     if not str(query).strip():
         raise ValueError("query не может быть пустым")
     limit = max(1, min(int(limit), 5))
-    # регистронезависимо, значимые слова >= 3 символов
-    words = [w for w in re.findall(r"\w+", str(query).lower()) if len(w) > 2]
+    words = query_words(query)
     if not words:
         raise ValueError("в query нет значимых слов")
     scored = []
@@ -123,19 +145,7 @@ def search_docs(query: str, limit: int = 3) -> str:
         paragraphs = [p.strip() for p in
                       path.read_text(encoding="utf-8").split("\n\n") if p.strip()]
         for para in paragraphs:
-            low = para.lower()
-            # Точное слово целиком (по границам слова) — полный вес; плюс
-            # словоформы: основа и до 2 букв окончания («задача» находит
-            # «задачи/задач»), с весом 0.4, чтобы точное вхождение всегда
-            # ранжировалось выше. Хвост длиннее 2 букв — уже другое слово:
-            # «план» не находит «планировщик», «задача» — «задание».
-            score = 0.0
-            for w in words:
-                score += len(re.findall(r"\b" + re.escape(w) + r"\b", low))
-                stem = _stem(w)
-                if stem:
-                    score += 0.4 * len(
-                        re.findall(r"\b" + re.escape(stem) + r"\w{0,2}\b", low))
+            score = lex_score(words, para)
             if score:
                 scored.append((round(score, 2), path.name, para))
     if not scored:

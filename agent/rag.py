@@ -2,10 +2,11 @@
 документов, индекс на диске с пересчётом по хэшу и векторный поиск.
 
 Шаги 1-3 методички написаны вручную. Эмбеддинги по умолчанию — локальная
-Ollama (OpenAI-совместимый /v1/embeddings), при недоступности — OpenRouter
-(ключ и адрес берутся из .env: EMBED_* переопределяют, иначе fallback из
-FALLBACK_*). Индекс и запросы считаются одной и той же моделью: имя модели
-входит в хэш индекса, смена модели вызывает пересчёт.
+Ollama (OpenAI-совместимый /v1/embeddings); на OpenRouter или другой
+сервис переключаются вручную через EMBED_BASE_URL/EMBED_API_KEY/EMBED_MODEL
+в .env — автоматического fallback у эмбеддингов нет (FALLBACK_* относятся
+к чат-модели в agent.py). Индекс и запросы считаются одной и той же
+моделью: имя модели входит в хэш индекса, смена модели вызывает пересчёт.
 """
 import hashlib
 import json
@@ -18,8 +19,9 @@ import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# _stem — общий lexical-скоринг с keyword-поиском лаб. 3 (context.py)
-from context import _stem
+# общий lexical-скоринг с keyword-поиском лаб. 3 (context.py) — один
+# общий scoring, а не копия, чтобы гибрид всегда совпадал с keyword
+from context import lex_score, query_words
 
 load_dotenv()
 
@@ -34,7 +36,9 @@ EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "http://localhost:11434/v1")
 EMBED_API_KEY = os.getenv("EMBED_API_KEY", "ollama")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 
-# порог «похожести»: у разных моделей разный масштаб косинуса
+# порог «похожести»: откалиброван под bge-m3 — фон косинуса на русском
+# тексте ~0.4. При смене EMBED_MODEL порог надо пересматривать вручную:
+# модель входит в хэш индекса (индекс пересчитается), а порог — нет
 MIN_SCORE = float(os.getenv("MIN_SCORE", "0.45"))
 
 # размер окна и перекрытие настраиваются окружением (эксперименты шага 6:
@@ -43,7 +47,19 @@ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
 
 
+_remote_warned = False
+
+
 def _embed_client() -> OpenAI:
+    # эмбеддинг уводит ВЕСЬ корпус и запросы на внешний сервис под вашим
+    # ключом — предупредить ровно один раз за процесс
+    global _remote_warned
+    if not _remote_warned and "localhost" not in EMBED_BASE_URL \
+            and "127.0.0.1" not in EMBED_BASE_URL:
+        _remote_warned = True
+        print(f"⚠ EMBED_BASE_URL не локальный ({EMBED_BASE_URL}): содержимое "
+              f"docs/ и поисковые запросы уходят на внешний сервис "
+              f"под вашим EMBED_API_KEY")
     return OpenAI(base_url=EMBED_BASE_URL, api_key=EMBED_API_KEY,
                   max_retries=0, timeout=120)
 
@@ -112,9 +128,15 @@ def _all_chunks(size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[di
 
 
 # ---------- шаг 3: индекс на диске с пересчётом по хэшу ----------
+SCHEMA_VERSION = 2     # bump при изменении чанкинга или структуры индекса
+
+
 def _index_hash(size: int, overlap: int) -> str:
-    """Хэш имени модели, size/overlap и содержимого всех .md в docs/."""
+    """Хэш версии схемы, имени модели, size/overlap и содержимого всех
+    .md в docs/. Версия нужна, чтобы правка самого чанкера при тех же
+    size/overlap не обслуживала старый индекс как cache hit."""
     h = hashlib.sha256()
+    h.update(f"rag-index-v{SCHEMA_VERSION}".encode())
     h.update(EMBED_MODEL.encode())
     h.update(f"{size}/{overlap}".encode())
     for path in sorted(DOCS_DIR.glob("*.md")):
@@ -129,14 +151,20 @@ def load_or_build_index(size: int = CHUNK_SIZE,
     и сохраняет. Лог: INDEX: cache hit / INDEX: rebuilt, N chunks и время."""
     expected = _index_hash(size, overlap)
     if INDEX_FILE.is_file():
+        data = None
+        # любые проблемы чтения/валидации — повод пересчитать, а не упасть:
+        # кроме битого JSON и OSError сюда попадают валидный JSON не того
+        # типа (AttributeError на data.get) и битая кодировка (ValueError)
         try:
             data = json.loads(INDEX_FILE.read_text(encoding="utf-8"))
-            if data.get("hash") == expected:
-                print(f"INDEX: cache hit ({len(data['chunks'])} chunks, "
-                      f"model={data['model']})")
-                return data
-        except (json.JSONDecodeError, OSError, KeyError):
-            print("INDEX: файл индекса повреждён, пересчитываю")
+        except Exception as e:
+            print(f"INDEX: файл индекса повреждён ({e}); пересчитываю")
+        if isinstance(data, dict) and data.get("hash") == expected:
+            print(f"INDEX: cache hit ({len(data['chunks'])} chunks, "
+                  f"model={data['model']})")
+            return data
+        elif data is not None:
+            print("INDEX: содержимое индекса устарело, пересчитываю")
     started = time.time()
     chunks = _all_chunks(size, overlap)
     if chunks:
@@ -169,30 +197,22 @@ def vector_search(query: str, limit: int = 3) -> str:
     if scored[0][0] < MIN_SCORE:
         return (f"ОШИБКА: нет похожих фрагментов (лучший косинус "
                 f"{scored[0][0]:.2f} ниже порога {MIN_SCORE:.2f}).")
+    # порог действует на весь список, а не только на топ-1: иначе при
+    # limit=5 контекст разбавляется фрагментами с косинусом ~0
+    top = [(score, c) for score, c in scored if score >= MIN_SCORE][:limit]
     return "\n\n".join(
         f"{n}. [{c['file']} § {c['title']}] cos={score:.2f}: {c['text'][:400]}"
-        for n, (score, c) in enumerate(scored[:limit], 1)
+        for n, (score, c) in enumerate(top, 1)
     )
 
 
 # ---------- бонус: гибридный поиск (reciprocal rank fusion) ----------
 def _keyword_chunk_scores(query: str, chunks: list[dict]) -> list[float]:
-    """Тот же lexical-скоринг, что у keyword_search_docs из context.py
-    (точные слова + словоформы через _stem), но по фрагментам индекса —
+    """Тот же lexical-скоринг, что у keyword_search_docs из context.py, —
+    общий lex_score (не копия), но по фрагментам индекса (текст+заголовок) —
     чтобы ранги keyword и vector были сопоставимы (одна гранулярность)."""
-    words = [w for w in re.findall(r"\w+", str(query).lower()) if len(w) > 2]
-    scores = []
-    for c in chunks:
-        low = c["text"].lower() + " " + c["title"].lower()
-        score = 0.0
-        for w in words:
-            score += len(re.findall(r"\b" + re.escape(w) + r"\b", low))
-            stem = _stem(w)
-            if stem:
-                score += 0.4 * len(
-                    re.findall(r"\b" + re.escape(stem) + r"\w{0,2}\b", low))
-        scores.append(score)
-    return scores
+    words = query_words(query)
+    return [lex_score(words, c["text"] + " " + c["title"]) for c in chunks]
 
 
 RRF_K = 60              # константа RRF: гасит вклад верхушки рейтинга
@@ -212,16 +232,20 @@ def hybrid_search(query: str, limit: int = 3) -> str:
     if not index["chunks"]:
         return "ОШИБКА: docs/ пуста — нечего искать."
     kw_scores = _keyword_chunk_scores(query, index["chunks"])
-    kw_rank = sorted(range(len(kw_scores)),
-                     key=lambda i: -kw_scores[i])[:FUSE_DEPTH]
+    # в fusion попадают только фрагменты с ненулевым скором: иначе при
+    # чистом перефразе «keyword-ранжирование» вырождается в порядок индекса,
+    # и первые FUSE_DEPTH чанков получают бессмысленный RRF-буст, вытесняя
+    # настоящие векторные совпадения (находка ревью, verified repro)
+    kw_rank = [i for i in sorted(range(len(kw_scores)), key=lambda i: -kw_scores[i])
+               if kw_scores[i] > 0][:FUSE_DEPTH]
     qvec = embed([str(query)])[0]
     vec_scores = [cosine(qvec, c["vector"]) for c in index["chunks"]]
-    vec_rank = sorted(range(len(vec_scores)),
-                      key=lambda i: -vec_scores[i])[:FUSE_DEPTH]
-    if kw_scores[kw_rank[0]] == 0 and vec_scores[vec_rank[0]] < MIN_SCORE:
+    vec_rank = [i for i in sorted(range(len(vec_scores)), key=lambda i: -vec_scores[i])
+                if vec_scores[i] > 0][:FUSE_DEPTH]
+    best_vec = max(vec_scores) if vec_scores else 0.0
+    if not kw_rank and best_vec < MIN_SCORE:
         return ("ОШИБКА: нет похожих фрагментов (keyword — нули, лучший "
-                f"косинус {vec_scores[vec_rank[0]]:.2f} ниже порога "
-                f"{MIN_SCORE:.2f}).")
+                f"косинус {best_vec:.2f} ниже порога {MIN_SCORE:.2f}).")
     rrf = {}
     for rank, i in enumerate(kw_rank, 1):        # ранг с 1: важнее верхушки
         rrf[i] = rrf.get(i, 0.0) + 1.0 / (RRF_K + rank)
