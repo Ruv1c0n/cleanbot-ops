@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+import time
 import openai
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -31,14 +32,27 @@ def make_client(cfg):
                   max_retries=0, timeout=120)
 
 
+def _backend_model_ids(cfg, timeout=3) -> list:
+    """Список id моделей бэкенда. Недоступен/ошибка -> []: вызывается из
+    веб-эндпоинтов, где отсутствие списка не должно ронять обработчик."""
+    try:
+        return [m.id for m in make_client(cfg).with_options(
+            timeout=timeout).models.list().data]
+    except Exception:
+        return []
+
+
+def local_model_ids() -> list:
+    return _backend_model_ids(LOCAL)
+
+
+def online_model_ids() -> list:
+    return _backend_model_ids(FALLBACK)
+
+
 def local_available() -> bool:
     """Локальный сервер отвечает и нужная модель скачана."""
-    try:
-        ids = [m.id for m in make_client(LOCAL).with_options(
-            timeout=3).models.list().data]
-        return LOCAL["model"] in ids
-    except Exception:
-        return False
+    return LOCAL["model"] in _backend_model_ids(LOCAL)
 
 
 active = None
@@ -68,6 +82,43 @@ def chat(**kwargs):
         print("[локальная модель недоступна, переключаюсь на онлайн-модель]")
         active, client = FALLBACK, make_client(FALLBACK)
         return client.chat.completions.create(model=active["model"], **kwargs)
+
+
+def chat_for(client_, model_name, backend, **kwargs):
+    """Fallback-логика chat() для явной тройки (client, model, backend):
+    обрыв соединения на локальном бэкенде -> повтор на FALLBACK. Глобальные
+    active/client НЕ мутируются — веб-сессия с выбранной моделью не должна
+    менять модель консольного сценария. Возвращает (response, fallback_used)."""
+    try:
+        return client_.chat.completions.create(model=model_name, **kwargs), False
+    except openai.APIConnectionError:
+        if backend is FALLBACK or not FALLBACK["api_key"]:
+            raise
+        print("[локальная модель недоступна, переключаюсь на онлайн-модель]")
+        response = make_client(FALLBACK).chat.completions.create(
+            model=FALLBACK["model"], **kwargs)
+        return response, True
+
+
+def resolve_model(model_id=None):
+    """Per-request выбор модели: (client, model_name, backend) по id.
+    None/пусто или id активной модели -> глобальные client/active (без новых
+    сетевых вызовов). Иначе id ищется сначала в локальном списке, потом
+    онлайн. Неизвестный id -> LookupError с перечнем доступных (webui
+    превращает его в 400 с этим текстом)."""
+    if not model_id:
+        return client, active["model"], active
+    if model_id == active["model"]:
+        return client, model_id, active
+    local = _backend_model_ids(LOCAL)
+    if model_id in local:
+        return make_client(LOCAL), model_id, LOCAL
+    online = _backend_model_ids(FALLBACK)
+    if model_id in online:
+        return make_client(FALLBACK), model_id, FALLBACK
+    known = sorted(set(local) | set(online))
+    raise LookupError("неизвестная модель {!r}; доступные: {}".format(
+        model_id, ", ".join(known) or "(нет)"))
 
 
 # лимит шагов цикла
@@ -139,6 +190,86 @@ def save_session(session_id: str, messages: list) -> None:
     path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    _touch_meta(session_id, data)
+
+
+# ---------- sidecar meta сессии (webui-pro) ----------
+# Метаданные чата живут рядом с историей: <id>.meta.json. Отдельный файл,
+# а не ключи внутри истории — формат <id>.json зафиксирован (список
+# сообщений) и должен остаться совместимым со старыми сессиями.
+META_DEFAULTS = {"title": None, "model": None, "pinned": False,
+                 "created_at": 0.0, "updated_at": 0.0,
+                 "system": None, "temperature": None, "max_tokens": None}
+
+
+def meta_path(session_id: str):
+    """Путь sidecar-файла метаданных той же сессии (<id>.meta.json)."""
+    return _session_path(session_id).with_suffix(".meta.json")
+
+
+def load_meta(session_id: str) -> dict:
+    """Метаданные сессии; отсутствие файла или битый JSON -> дефолты:
+    meta — вспомогательные данные, их отсутствие не должно ломать чтение."""
+    meta = dict(META_DEFAULTS)
+    path = meta_path(session_id)
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for key in META_DEFAULTS:
+                    if key in data:
+                        meta[key] = data[key]
+        except (json.JSONDecodeError, OSError, ValueError):
+            pass
+    return meta
+
+
+def save_meta(session_id: str, meta: dict) -> None:
+    """Атомарная запись meta: tmp + os.replace — читатель (список сессий)
+    никогда не видит полузаписанный файл."""
+    path = meta_path(session_id)
+    path.parent.mkdir(exist_ok=True)
+    data = {key: meta.get(key, META_DEFAULTS[key]) for key in META_DEFAULTS}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def auto_title(text, limit: int = 48) -> str | None:
+    """Заголовок чата из первого user-сообщения: пробелы/переносы схлопываются,
+    обрезка до ~limit символов по границе слова. None — заголовка нет."""
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return None
+    if len(clean) <= limit:
+        return clean
+    head = clean[:limit]
+    cut = head.rfind(" ")
+    if cut > 0:
+        head = head[:cut]
+    return head.rstrip() or clean[:limit].rstrip()
+
+
+def _touch_meta(session_id: str, history: list) -> None:
+    """Обновление meta при сохранении истории: updated_at, created_at при
+    первой записи и автозаголовок, пока title не задан (ручное название
+    из PATCH не перетирается). Ошибка meta не роняет сохранение истории —
+    история важнее вспомогательного файла."""
+    try:
+        meta = load_meta(session_id)
+        now = time.time()
+        meta["updated_at"] = now
+        if not meta.get("created_at"):
+            meta["created_at"] = now
+        if meta.get("title") is None:
+            first = next((m.get("content") for m in history
+                          if m.get("role") == "user"
+                          and isinstance(m.get("content"), str)), None)
+            meta["title"] = auto_title(first)
+        save_meta(session_id, meta)
+    except OSError:
+        pass
 
 
 def summarize(dropped: list) -> str:
@@ -429,6 +560,157 @@ def run_agent(messages: list) -> str:
         save_session(SESSION_ID, messages)                   # шаг агента завершён — сохраняем
 
     return "Достигнут лимит шагов, задача не завершена."
+
+
+# ---------- стриминговый агентный цикл (webui-pro) ----------
+def accumulate_tool_call_delta(acc: dict, delta_tool_calls) -> dict:
+    """Аккумулятор streaming tool_calls (стандартная схема OpenAI): дельты
+    приходят порциями с полем index; id и имя приходят один раз в первой
+    дельте слота, arguments доклеивается кусочками — это части одной
+    JSON-строки аргументов. acc: index -> {id, name, arguments}."""
+    for d in delta_tool_calls or ():
+        idx = getattr(d, "index", 0) or 0
+        slot = acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+        if getattr(d, "id", None):
+            slot["id"] = d.id
+        fn = getattr(d, "function", None)
+        if fn is not None:
+            if getattr(fn, "name", None):
+                slot["name"] = fn.name
+            if getattr(fn, "arguments", None):
+                slot["arguments"] += fn.arguments
+    return acc
+
+
+def run_agent_stream(messages: list, *, on_delta, on_log=None,
+                     cancel_event=None, session_id=None, client=None,
+                     model_name=None, backend=None, gen_kwargs=None) -> dict:
+    """Стриминговый twin run_agent: каждый вызов модели stream=True, дельты
+    контента уходят в on_delta по мере появления, строки цикла — в on_log
+    (None -> print: webui в не-стрим режиме перехватывает stdout, и log
+    остаётся ровно прежним). tool_call-дельты копятся аккумулятором и
+    исполняются как в run_agent (execute_tool, эхо). save_session после
+    каждого шага, как в run_agent.
+
+    cancel_event проверяется до каждого шага и после каждой дельты: при
+    отмене недописанный assistant в историю НЕ попадает («история как есть»),
+    накопленный текст возвращается для показа «остановлено».
+
+    Возвращает {"answer", "model", "fallback_used", "usage", "stopped"}."""
+    log = on_log if on_log is not None else print
+    c = client if client is not None else globals()["client"]
+    mn = model_name or active["model"]
+    b = backend if backend is not None else active
+    gen = dict(gen_kwargs or {})
+    if session_id is None:
+        session_id = SESSION_ID
+    fallback_used = False
+    stopped = False
+    # накопленный за все шаги стрим — ответ при отмене может быть частичным
+    streamed = []
+    usage = {"prompt_tokens": None, "completion_tokens": None}
+
+    def _add_usage(step_usage, chunk_usage):
+        # usage в стриме приходит последним чанком (stream_options), но
+        # часть серверов (vLLM/llama.cpp) шлёт кумулятивный usage в КАЖДОМ
+        # чанке: внутри шага перезаписываем, а не суммируем — иначе кратный
+        # перебор токенов (ревью); между шагами суммируем
+        if chunk_usage is None:
+            return
+        for key in ("prompt_tokens", "completion_tokens"):
+            val = getattr(chunk_usage, key, None)
+            if val:
+                step_usage[key] = val
+
+    for step in range(MAX_STEPS):
+        if cancel_event is not None and cancel_event.is_set():
+            stopped = True
+            break
+        req = ensure_context_budget(list(messages), CONTEXT_BUDGET, STRATEGY,
+                                    TOOLS, summarize_fn=summarize)
+        est = estimate_tokens(req, TOOLS)
+        call_kwargs = dict(messages=req, tools=TOOLS, stream=True,
+                           stream_options={"include_usage": True}, **gen)
+        try:
+            response, fb = chat_for(c, mn, b, **call_kwargs)
+        except (TypeError, openai.BadRequestError):
+            # не все OpenAI-совместимые серверы знают stream_options —
+            # повтор без него: стрим важнее метрик токенов
+            call_kwargs.pop("stream_options", None)
+            response, fb = chat_for(c, mn, b, **call_kwargs)
+        fallback_used = fallback_used or fb
+
+        parts, acc, finish, resp_model = [], {}, None, mn
+        step_usage: dict = {}
+        for chunk in response:
+            if cancel_event is not None and cancel_event.is_set():
+                stopped = True
+                break
+            if getattr(chunk, "model", None):
+                resp_model = chunk.model
+            _add_usage(step_usage, getattr(chunk, "usage", None))
+            choices = getattr(chunk, "choices", None) or ()
+            if not choices:
+                continue            # финальный чанк с usage без choices
+            choice = choices[0]
+            finish = getattr(choice, "finish_reason", None) or finish
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            text = getattr(delta, "content", None)
+            if text:
+                parts.append(text)
+                streamed.append(text)
+                on_delta(text)
+            if getattr(delta, "tool_calls", None):
+                accumulate_tool_call_delta(acc, delta.tool_calls)
+
+        for key in ("prompt_tokens", "completion_tokens"):
+            if step_usage.get(key):
+                usage[key] = (usage[key] or 0) + step_usage[key]
+
+        if stopped:
+            break            # возврат stopped-результата после цикла шагов
+
+        in_tok = usage["prompt_tokens"] or "?"
+        out_tok = usage["completion_tokens"] or "?"
+        log(f"[шаг {step}: model={resp_model} оценка={est} "
+            f"in={in_tok} out={out_tok} finish={finish}]")
+
+        calls = [acc[i] for i in sorted(acc)]
+        if not calls:                            # инструментов нет — итоговый ответ
+            answer = "".join(parts)
+            messages.append({"role": "assistant", "content": answer})
+            save_session(session_id, messages)
+            return {"answer": answer, "model": resp_model,
+                    "fallback_used": fallback_used, "usage": usage,
+                    "stopped": False}
+
+        messages.append({"role": "assistant", "content": "".join(parts),
+                         "tool_calls": [
+                             {"id": s["id"], "type": "function",
+                              "function": {"name": s["name"],
+                                           "arguments": s["arguments"]}}
+                             for s in calls]})
+        for call in messages[-1]["tool_calls"]:
+            result = execute_tool(call["function"]["name"],
+                                  call["function"]["arguments"])
+            log(f"🔧 {call['function']['name']}"
+                f"({_console_safe(call['function']['arguments'])})"
+                f" -> {_console_safe(result[:200])}")
+            messages.append({"role": "tool", "tool_call_id": call["id"],
+                             "content": result})
+        save_session(session_id, messages)       # шаг агента завершён — сохраняем
+
+    if stopped:
+        # cancel между шагами/посреди дельт: история как есть (недописанный
+        # assistant не добавлялся), накопленный текст — для «остановлено»
+        return {"answer": "".join(streamed), "model": mn,
+                "fallback_used": fallback_used, "usage": usage,
+                "stopped": True}
+    return {"answer": "Достигнут лимит шагов, задача не завершена.",
+            "model": mn, "fallback_used": fallback_used, "usage": usage,
+            "stopped": False}
 
 
 if __name__ == "__main__":

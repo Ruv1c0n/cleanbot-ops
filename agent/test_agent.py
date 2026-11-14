@@ -493,3 +493,301 @@ def test_system_prompt_envelope_from_constants():
     assert context.ENVELOPE_CLOSE in agent.SYSTEM_PROMPT
     # точная старая разошедшаяся строка больше не встречается
     assert "<<<ДАННЫЕ ДОКУМЕНТА>>> и" not in agent.SYSTEM_PROMPT
+
+
+# ---------- webui-pro: автозаголовок, meta-sidecar, стриминговый цикл ----------
+
+from types import SimpleNamespace
+
+import openai
+
+
+def content_chunk(text, finish=None, model="fake-model", usage=None):
+    """Чанк стрима с дельтой контента (usage — у финального чанка)."""
+    return SimpleNamespace(model=model, usage=usage,
+                           choices=[SimpleNamespace(
+                               finish_reason=finish,
+                               delta=SimpleNamespace(content=text,
+                                                     tool_calls=None))])
+
+
+def tool_chunk(index=0, call_id=None, name=None, args=None):
+    return SimpleNamespace(model="fake-model", usage=None,
+                           choices=[SimpleNamespace(
+                               finish_reason=None,
+                               delta=SimpleNamespace(
+                                   content=None,
+                                   tool_calls=[SimpleNamespace(
+                                       index=index, id=call_id,
+                                       function=SimpleNamespace(
+                                           name=name,
+                                           arguments=args))]))])
+
+
+def usage_chunk(pt, ct, model="fake-model"):
+    """Финальный чанк с usage и пустым choices: некоторые бэкенды шлют
+    метрики отдельным чанком без choices."""
+    return SimpleNamespace(model=model,
+                           usage=SimpleNamespace(prompt_tokens=pt,
+                                                 completion_tokens=ct),
+                           choices=[])
+
+
+def make_stream_client(*batches):
+    """Fake-клиент: каждый create() отдаёт очередную партию чанков стримом
+    (iter). Партий меньше, чем вызовов, — последняя повторяется."""
+    recorded = []
+
+    def create(**kwargs):
+        recorded.append(kwargs)
+        chunks = batches[min(len(recorded) - 1, len(batches) - 1)]
+        return iter(list(chunks))
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=create)))
+    return client, recorded
+
+
+# ---------- auto_title ----------
+
+def test_auto_title_collapses_whitespace_and_none():
+    assert agent.auto_title("  привет \n\t мир  ") == "привет мир"
+    assert agent.auto_title("") is None
+    assert agent.auto_title(None) is None
+    assert agent.auto_title("   ") is None
+
+
+def test_auto_title_cuts_at_word_boundary():
+    # «слово»*11 с пробелами = 65 символов: обрезка по пробелу, а не по
+    # середине слова
+    long_text = " ".join(["слово"] * 11)
+    title = agent.auto_title(long_text, limit=48)
+    assert len(title) <= 48
+    assert title == " ".join(["слово"] * 8)      # 8*5 + 7 пробелов = 47
+    # без пробелов в пределах лимита — режется жёстко, но не падает
+    assert agent.auto_title("х" * 100) == "х" * 48
+    assert agent.auto_title("короткий") == "короткий"
+
+
+# ---------- meta sidecar ----------
+
+def test_meta_roundtrip_defaults_and_corrupted(sessions_ws):
+    agent.save_meta("m1", {"title": "Т", "pinned": True})
+    meta = agent.load_meta("m1")
+    assert meta["title"] == "Т" and meta["pinned"] is True
+    # отсутствующие поля добираются дефолтами — форма meta стабильна
+    assert meta["temperature"] is None and meta["created_at"] == 0.0
+    assert meta["max_tokens"] is None and meta["model"] is None
+    # атомарная запись: tmp-файл после os.replace не остаётся
+    meta_p = agent.meta_path("m1")
+    assert not meta_p.with_name(meta_p.name + ".tmp").exists()
+    # битый meta игнорируется — чтение не падает, отдаёт дефолты
+    meta_p.write_text("{битый json", encoding="utf-8")
+    assert agent.load_meta("m1") == agent.META_DEFAULTS
+    # отсутствие meta-файла — дефолты
+    assert agent.load_meta("нет-такой") == agent.META_DEFAULTS
+
+
+def test_save_session_touches_meta_autotitle(sessions_ws):
+    agent.save_session("t", [user("Привет мир")])
+    meta = agent.load_meta("t")
+    assert meta["title"] == "Привет мир"
+    assert meta["created_at"] > 0 and meta["updated_at"] > 0
+    # второй save: уже вычисленный title не перетирается
+    agent.save_session("t", [user("Совсем другой текст"), assistant("ответ")])
+    assert agent.load_meta("t")["title"] == "Привет мир"
+
+
+# ---------- аккумулятор tool_call-дельт ----------
+
+def test_accumulate_tool_call_delta_assembles_call():
+    acc = {}
+    agent.accumulate_tool_call_delta(acc, [SimpleNamespace(
+        index=0, id="c1",
+        function=SimpleNamespace(name="read_file", arguments='{"pa'))])
+    agent.accumulate_tool_call_delta(acc, [SimpleNamespace(
+        index=0, id=None,
+        function=SimpleNamespace(name=None, arguments='th": "a.md"}'))])
+    # вторая параллельная дельта с другим index — отдельный слот
+    agent.accumulate_tool_call_delta(acc, [SimpleNamespace(
+        index=1, id="c2",
+        function=SimpleNamespace(name="list_files", arguments="{}"))])
+    assert acc[0] == {"id": "c1", "name": "read_file",
+                      "arguments": '{"path": "a.md"}'}
+    assert acc[1] == {"id": "c2", "name": "list_files", "arguments": "{}"}
+
+
+def test_accumulate_tool_call_delta_empty_noop():
+    acc = {}
+    assert agent.accumulate_tool_call_delta(acc, None) is acc
+    assert agent.accumulate_tool_call_delta(acc, ()) is acc
+    assert acc == {}
+
+
+# ---------- run_agent_stream ----------
+
+def test_run_agent_stream_no_tools(sessions_ws):
+    client, calls = make_stream_client(
+        [content_chunk("При"), content_chunk("вет", finish="stop"),
+         usage_chunk(10, 5)])
+    msgs = [user("привет")]
+    logs, deltas = [], []
+    res = agent.run_agent_stream(msgs, on_log=logs.append,
+                                 on_delta=deltas.append, session_id="ns",
+                                 client=client, model_name="fake-model",
+                                 backend=agent.LOCAL)
+    assert res == {"answer": "Привет", "model": "fake-model",
+                   "fallback_used": False,
+                   "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                   "stopped": False}
+    assert deltas == ["При", "вет"]              # дельты по мере появления
+    assert any("[шаг 0" in line for line in logs)
+    assert msgs[-1] == {"role": "assistant", "content": "Привет"}
+    assert (sessions_ws / "ns.json").is_file()   # save_session после шага
+    assert calls[0]["stream"] is True
+
+
+def test_run_agent_stream_with_tool(sessions_ws, monkeypatch):
+    client, calls = make_stream_client(
+        [tool_chunk(call_id="c1", name="list_files", args='{"path": "docs"}'),
+         content_chunk("", finish="tool_calls")],
+        [content_chunk("Готово", finish="stop")])
+    executed = []
+    monkeypatch.setattr(agent, "execute_tool",
+                        lambda name, args: executed.append((name, args))
+                        or "ok-результат")
+    msgs = [user("покажи файлы")]
+    logs, deltas = [], []
+    res = agent.run_agent_stream(msgs, on_log=logs.append,
+                                 on_delta=deltas.append, session_id="wt",
+                                 client=client, model_name="fake-model",
+                                 backend=agent.LOCAL)
+    assert executed == [("list_files", '{"path": "docs"}')]
+    assert len(calls) == 2                       # два вызова модели
+    # тулза-результат в истории второго запроса (запрос без system: user,
+    # assistant с tool_calls, tool)
+    assert [m["role"] for m in calls[1]["messages"]] == \
+        ["user", "assistant", "tool"]
+    assert msgs[1]["tool_calls"] == [
+        {"id": "c1", "type": "function",
+         "function": {"name": "list_files", "arguments": '{"path": "docs"}'}}]
+    assert msgs[2] == {"role": "tool", "tool_call_id": "c1",
+                       "content": "ok-результат"}
+    assert res["answer"] == "Готово" and res["stopped"] is False
+    assert any("🔧" in line and "list_files" in line for line in logs)
+    assert (sessions_ws / "wt.json").is_file()
+
+
+def test_run_agent_stream_cancel_mid_deltas(sessions_ws):
+    import threading
+    ev = threading.Event()
+    client, calls = make_stream_client(
+        [content_chunk("При"), content_chunk("вет", finish="stop")])
+    msgs = [user("стоп посреди текста")]
+    deltas = []
+
+    def on_delta(text):
+        deltas.append(text)
+        if text == "При":
+            ev.set()                             # отмена после первой дельты
+
+    res = agent.run_agent_stream(msgs, on_delta=on_delta, cancel_event=ev,
+                                 session_id="cm", client=client,
+                                 model_name="fake-model", backend=agent.LOCAL)
+    assert res["stopped"] is True
+    assert res["answer"] == "При"                # накопленный текст возвращается
+    assert msgs == [user("стоп посреди текста")] # история как есть, без assistant
+    assert not (sessions_ws / "cm.json").is_file()
+    assert len(calls) == 1
+
+
+def test_run_agent_stream_cancel_between_steps(sessions_ws, monkeypatch):
+    import threading
+    ev = threading.Event()
+    client, calls = make_stream_client(
+        [tool_chunk(call_id="c1", name="list_files", args="{}")],
+        [content_chunk("этот шаг не должен начаться")])
+    monkeypatch.setattr(agent, "execute_tool",
+                        lambda name, args: ev.set() or "ok")
+    msgs = [user("стоп между шагами")]
+    res = agent.run_agent_stream(msgs, on_delta=lambda t: None,
+                                 cancel_event=ev, session_id="cb",
+                                 client=client, model_name="fake-model",
+                                 backend=agent.LOCAL)
+    assert res["stopped"] is True and res["answer"] == ""
+    assert len(calls) == 1                       # второй шаг не начался
+    # но завершённый шаг с тулзой в истории сохранён (как в run_agent)
+    assert [m["role"] for m in msgs[1:]] == ["assistant", "tool"]
+    assert (sessions_ws / "cb.json").is_file()
+
+
+def test_run_agent_stream_retry_without_stream_options(sessions_ws):
+    # не все OpenAI-совместимые серверы знают stream_options: после ошибки
+    # запрос повторяется без него, стрим не теряется
+    calls = []
+
+    def create(**kwargs):
+        if "stream_options" in kwargs:
+            raise TypeError("unexpected keyword argument 'stream_options'")
+        calls.append(kwargs)
+        return iter([content_chunk("ок", finish="stop")])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=create)))
+    res = agent.run_agent_stream([user("привет")],
+                                 on_delta=lambda t: None, session_id="so",
+                                 client=client, model_name="fake-model",
+                                 backend=agent.LOCAL)
+    assert res["answer"] == "ок"
+    assert len(calls) == 1
+    assert "stream_options" not in calls[0]
+
+
+# ---------- per-request модель и fallback ----------
+
+def test_resolve_model_does_not_mutate_globals(monkeypatch):
+    sentinel_local, sentinel_online = object(), object()
+    monkeypatch.setattr(agent, "make_client",
+                        lambda cfg: sentinel_local if cfg is agent.LOCAL
+                        else sentinel_online)
+    monkeypatch.setattr(agent, "_backend_model_ids",
+                        lambda cfg, timeout=3: ["fake-local"]
+                        if cfg is agent.LOCAL else ["fake-online"])
+    fake_active = {"model": "fake-local", "base_url": "x"}
+    monkeypatch.setattr(agent, "active", fake_active)
+    monkeypatch.setattr(agent, "client", sentinel_local)
+    # без id и с активной моделью — глобальные client/active без сети
+    assert agent.resolve_model(None) == \
+        (sentinel_local, "fake-local", fake_active)
+    assert agent.resolve_model("fake-local") == \
+        (sentinel_local, "fake-local", fake_active)
+    # онлайн-модель по списку -> новый клиент на FALLBACK
+    c, mn, b = agent.resolve_model("fake-online")
+    assert c is sentinel_online and b is agent.FALLBACK and mn == "fake-online"
+    # глобальные не мутированы
+    assert agent.active is fake_active and agent.client is sentinel_local
+    with pytest.raises(LookupError, match="fake-local"):
+        agent.resolve_model("нет-такой")
+
+
+def test_chat_for_fallback_keeps_globals(monkeypatch):
+    def flaky_create(**kwargs):
+        raise openai.APIConnectionError(request=None)
+
+    flaky = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=flaky_create)))
+    good = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=lambda **kwargs: "resp")))
+    monkeypatch.setattr(agent, "make_client", lambda cfg: good)
+    monkeypatch.setattr(agent, "FALLBACK",
+                        {**agent.FALLBACK, "api_key": "k", "model": "fb"})
+    # обрыв на локальном -> повтор на FALLBACK, fallback_used=True
+    resp, used = agent.chat_for(flaky, "m", agent.LOCAL, messages=[])
+    assert (resp, used) == ("resp", True)
+    # обрыв на самом FALLBACK -> исключение (переключаться больше некуда)
+    with pytest.raises(openai.APIConnectionError):
+        agent.chat_for(flaky, "m", agent.FALLBACK, messages=[])
+    # без ключа FALLBACK — исключение, а не бесполезный повтор
+    monkeypatch.setattr(agent, "FALLBACK", {**agent.FALLBACK, "api_key": None})
+    with pytest.raises(openai.APIConnectionError):
+        agent.chat_for(flaky, "m", agent.LOCAL, messages=[])
