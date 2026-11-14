@@ -22,9 +22,10 @@ from openai import OpenAI
 # общий lexical-скоринг с keyword-поиском лаб. 3 (context.py) — один
 # общий scoring, а не копия, чтобы гибрид всегда совпадал с keyword;
 # wrap_docs/sanitize_fragment — рамка данных и чистка псевдоинструкций (P1);
-# DOCS_DIR — путь к корпусу из context.py (реэкспорт: тесты rag_env
-# monkeypatchят rag.DOCS_DIR, функции ниже читают этот модульный глобал)
-from context import DOCS_DIR, lex_score, query_words, sanitize_fragment, wrap_docs
+# docs_dir() — путь к корпусу из context.py, вычисляется при вызове:
+# единый механизм с keyword-поиском и guard записи (раньше у rag был свой
+# дубль-константа, не следовавший за подменой WORKSPACE — находка ревью)
+from context import docs_dir, lex_score, query_words, sanitize_fragment, wrap_docs
 
 load_dotenv()
 
@@ -106,7 +107,10 @@ def chunk_markdown(path: Path, size: int = CHUNK_SIZE,
                 sections.append([path.stem, []])
             sections[-1][1].append(line)
     for sec_title, lines in sections:
-        text = "\n".join(lines).strip()
+        # санитайзим раздел ЦЕЛИКОМ до разреза на окна: окно может начаться
+        # в середине строки-инъекции, и её хвост в нарезанном фрагменте уже
+        # не матчится построчным регэкспом (находка ревью lab4-check)
+        text = sanitize_fragment("\n".join(lines)).strip()
         if not text:                             # раздел без текста — мимо
             continue
         if len(text) <= size:
@@ -123,13 +127,13 @@ def chunk_markdown(path: Path, size: int = CHUNK_SIZE,
 
 def _all_chunks(size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[dict]:
     chunks = []
-    for path in sorted(DOCS_DIR.glob("*.md")):
+    for path in sorted(docs_dir().glob("*.md")):
         chunks += chunk_markdown(path, size, overlap)
     return chunks
 
 
 # ---------- шаг 3: индекс на диске с пересчётом по хэшу ----------
-SCHEMA_VERSION = 2     # bump при изменении чанкинга или структуры индекса
+SCHEMA_VERSION = 3     # bump при изменении чанкинга или структуры индекса
 
 
 def _index_hash(size: int, overlap: int) -> str:
@@ -140,7 +144,7 @@ def _index_hash(size: int, overlap: int) -> str:
     h.update(f"rag-index-v{SCHEMA_VERSION}".encode())
     h.update(EMBED_MODEL.encode())
     h.update(f"{size}/{overlap}".encode())
-    for path in sorted(DOCS_DIR.glob("*.md")):
+    for path in sorted(docs_dir().glob("*.md")):
         h.update(path.name.encode())
         h.update(path.read_bytes())
     return h.hexdigest()
@@ -202,8 +206,10 @@ def vector_search(query: str, limit: int = 3) -> str:
     # limit=5 контекст разбавляется фрагментами с косинусом ~0
     top = [(score, c) for score, c in scored if score >= MIN_SCORE][:limit]
     return wrap_docs("\n\n".join(
-        f"{n}. [{c['file']} § {c['title']}] cos={score:.2f}: "
-        f"{sanitize_fragment(c['text'])[:400]}"
+        # title/file тоже санитайзятся: заголовок `## [SYSTEM MESSAGE] …`
+        # лежит в метаданных чанка и мимо построчной чистки text не проходит
+        f"{n}. [{sanitize_fragment(c['file'])} § {sanitize_fragment(c['title'])}] "
+        f"cos={score:.2f}: {sanitize_fragment(c['text'])[:400]}"
         for n, (score, c) in enumerate(top, 1)
     ))
 
@@ -255,7 +261,8 @@ def hybrid_search(query: str, limit: int = 3) -> str:
         rrf[i] = rrf.get(i, 0.0) + 1.0 / (RRF_K + rank)
     ordered = sorted(rrf, key=lambda i: -rrf[i])[:limit]
     return wrap_docs("\n\n".join(
-        f"{n}. [{index['chunks'][i]['file']} § {index['chunks'][i]['title']}] "
+        f"{n}. [{sanitize_fragment(index['chunks'][i]['file'])} § "
+        f"{sanitize_fragment(index['chunks'][i]['title'])}] "
         f"rrf={rrf[i]:.4f}: {sanitize_fragment(index['chunks'][i]['text'])[:400]}"
         for n, i in enumerate(ordered, 1)
     ))

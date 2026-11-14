@@ -6,12 +6,13 @@ import openai
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# чистая контекстная логика вынесена в context.py (issue #15); DOCS_DIR и
-# константы конверта берутся оттуда же — один источник (находка ревью lab4:
-# путь к docs/ дублировался в rag.py и не следовал за подменой WORKSPACE)
-from context import (ENVELOPE_CLOSE, ENVELOPE_OPEN, SESSIONS_DIR, _session_path,
-                     docs_dir, estimate_tokens, ensure_context_budget,
-                     safe_path, search_docs)
+# чистая контекстная логика вынесена в context.py (issue #15); docs_dir()
+# и константы конверта берутся оттуда же — один источник (находка ревью
+# lab4: путь к docs/ дублировался в rag.py и не следовал за подменой
+# WORKSPACE; константы контекста дублировались под теми же именами)
+from context import (CONTEXT_BUDGET, ENVELOPE_CLOSE, ENVELOPE_OPEN, STRATEGY,
+                     _session_path, docs_dir, estimate_tokens,
+                     ensure_context_budget, safe_path, search_docs)
 # лаб. 4: векторный поиск по смыслу (эмбеддинги, индекс на диске)
 from rag import vector_search
 
@@ -96,8 +97,9 @@ SYSTEM_PROMPT = (
 
 # ---------- шаг 1: сессия на диске ----------
 SESSION_ID = "default"
-STRATEGY = "trim"           # trim | summarize
-CONTEXT_BUDGET = 6000       # бюджет контекста в «условных токенах»
+# STRATEGY/CONTEXT_BUDGET импортируются из context.py (дом контекстной
+# логики) — дубль под теми же именами расходился с дефолтами молча:
+# правка в context.py не меняла поведение агента (находка ревью)
 
 
 def load_session(session_id: str, system_prompt: str) -> list:
@@ -128,9 +130,13 @@ def load_session(session_id: str, system_prompt: str) -> list:
 
 def save_session(session_id: str, messages: list) -> None:
     """Сохраняет историю без system (секретов из .env там нет и не появляется)."""
-    SESSIONS_DIR.mkdir(exist_ok=True)
+    path = _session_path(session_id)
+    # mkdir по тому же пути, куда пишем: раньше папку создавала копия
+    # agent.SESSIONS_DIR, и редирект одного только context.SESSIONS_DIR
+    # падал FileNotFoundError (находка ревью)
+    path.parent.mkdir(exist_ok=True)
     data = [m for m in messages if m.get("role") != "system"]
-    _session_path(session_id).write_text(
+    path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 

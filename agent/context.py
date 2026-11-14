@@ -9,11 +9,6 @@ import re
 from pathlib import Path
 
 WORKSPACE = (Path(__file__).parent / "workspace").resolve()   # песочница
-# read-only корпус документации: единственный источник пути — импортируется
-# rag.py (раньше путь дублировался, и guard записи в agent.py не следовал
-# за monkeypatch WORKSPACE в тестах — находка ревью). Для кода, который
-# должен отслеживать подмену WORKSPACE во время теста, есть docs_dir()
-DOCS_DIR = WORKSPACE / "docs"
 SESSIONS_DIR = Path(__file__).parent / "sessions"
 STRATEGY = "trim"           # trim | summarize
 CONTEXT_BUDGET = 6000       # бюджет контекста в «условных токенах»
@@ -103,9 +98,11 @@ def safe_path(rel: str) -> Path:
 
 
 def docs_dir() -> Path:
-    """docs/ от текущего WORKSPACE, вычисляется при вызове. Константа
-    DOCS_DIR фиксируется на import и monkeypatch WORKSPACE в тестах её
-    не двигает; guard записи в agent.py использует именно эту функцию."""
+    """docs/ от текущего WORKSPACE, вычисляется при вызове — единый
+    механизм для keyword-поиска, rag и guard записи. Константа, вычисленная
+    на import, не следовала за подменой WORKSPACE в тестах: у keyword-поиска
+    и rag получались разные корпуса, а guard оставался нетестируемым
+    (находка ревью)."""
     return WORKSPACE / "docs"
 
 
@@ -150,8 +147,11 @@ ENVELOPE_CLOSE = "<<<КОНЕЦ ДОКУМЕНТОВ>>>"
 # [SYSTEM]/[SYSTEM MESSAGE] — проверенный батарёй лаб. 4 обход промпт-правила.
 # Ищется в ЛЮБОМ месте строки: старый ^-якорь пропускал «Ответ поддержки:
 # [SYSTEM MESSAGE] …». Скобочный маркер в обычной прозе не встречается,
-# поэтому якорь для него не нужен вовсе.
-_INJECTION_MARKER = re.compile(r"\[SYSTEM(\s+MESSAGE)?\]", re.I)
+# поэтому якорь для него не нужен вовсе. Пробелы и разделители внутри
+# скобок допускаются: обфускации «[ SYSTEM MESSAGE ]»/«[SYSTEM_MSG]» —
+# тот же класс payload-ов, который батарея лаб. 4 показала рабочим
+_INJECTION_MARKER = re.compile(
+    r"\[\s*SYSTEM(?:\s*[-_ ]?\s*(?:MESSAGE|MSG))?\s*\]", re.I)
 
 # «игнорируй(те)…» / «ignore all|previous…» — императив-псевдоинструкция.
 # Компромисс между полнотой и ложными срабатываниями: матчится в начале
@@ -212,6 +212,9 @@ def search_docs(query: str, limit: int = 3) -> str:
         return f"По запросу '{query}' ничего не найдено."
     scored.sort(key=lambda x: -x[0])
     return wrap_docs("\n\n".join(
-        f"{n}. {name} (score={score}): {sanitize_fragment(para)[:400]}"
+        # имя файла — тоже метаданные, попадающие в выдачу: санитайзим
+        # вместе с абзацем (находка ревью lab4-check — title/file в rag)
+        f"{n}. {sanitize_fragment(name)} (score={score}): "
+        f"{sanitize_fragment(para)[:400]}"
         for n, (score, name, para) in enumerate(scored[:limit], 1)
     ))

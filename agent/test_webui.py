@@ -1,6 +1,8 @@
 """Смоук-тесты webui.py: модуль без сети, страница на месте, валидация чата."""
 from pathlib import Path
 
+import pytest
+
 import webui
 
 
@@ -49,7 +51,50 @@ def test_origin_host_check():
     assert webui.origin_host_check("localhost:8765", "") is None  # пустой = отсутствие
 
 
-def test_webui_disables_interactive_writes():
-    # webui на import выключает input()-подтверждение write_file:
-    # иначе POST /api/chat зависает навсегда
+def test_web_mode_configures_agent(monkeypatch):
+    # находка ревью lab4-check: CONFIRM_WRITES=False был side-effect-ом
+    # import webui — импорт ради хелперов менял поведение консольного
+    # агента. Флаг включается только при старте сервера (configure_web_mode)
+    monkeypatch.setattr(webui.agent, "CONFIRM_WRITES", True)
+    webui.configure_web_mode()
     assert webui.agent.CONFIRM_WRITES is False
+    assert webui.agent.CONFIRM_WRITES is not True
+
+
+def test_ensure_backend_maps_systemexit(monkeypatch):
+    # находка ревью lab4-check: select_backend при «нет модели и нет ключа»
+    # бросает SystemExit — except Exception в HTTP-обработчике его не ловил,
+    # соединение обрывалось без 500-JSON
+    monkeypatch.setattr(webui, "backend_ready", False)
+
+    def boom():
+        raise SystemExit("Локальная модель недоступна, а FALLBACK_API_KEY не задан")
+
+    monkeypatch.setattr(webui.agent, "select_backend", boom)
+    with pytest.raises(RuntimeError, match="FALLBACK_API_KEY"):
+        webui._ensure_backend()
+
+
+def test_origin_host_rejects_userinfo():
+    # находка ревью lab4-check: наивный разрез по первому ':' отдавал
+    # 'localhost' для authority 'localhost:8765@evil.com' — userinfo
+    # маскировал реальный хост; urlsplit парсит userinfo правильно
+    assert webui.origin_host_check("localhost:8765@evil.com", None) is not None
+    assert webui.origin_host_check(
+        "localhost:8765", "http://localhost:8765@evil.com") is not None
+    # валидные хосты по-прежнему проходят (IPv6 отдаётся urlsplit-ом без скобок)
+    assert webui.origin_host_check("[::1]:8765", None) is None
+    assert webui.origin_host_check(
+        "localhost:8765", "http://user@localhost:8765") is None
+
+
+def test_parse_chat_normalizes_session():
+    # находка ревью lab4-check: validate_chat допускал запрос без session,
+    # а do_POST падал KeyError -> 500; нормализация теперь в одном месте
+    assert webui.parse_chat({"message": "привет"}) == ("web", "привет")
+    assert webui.parse_chat({"session": "lab4", "message": " х "}) == \
+        ("lab4", "х")
+    # нестроковая сессия нормализуется ДО валидации: в путь файла сессии
+    # уходит та же строка, которую проверил регэксп ("True" валиден)
+    assert webui.parse_chat({"session": True, "message": "х"}) == ("True", "х")
+    assert webui.parse_chat({"message": "   "}) == "пустое сообщение"

@@ -22,13 +22,6 @@ from urllib.parse import urlsplit
 
 import agent
 
-# write_file подтверждает запись через input(), но stdout webui перехвачен
-# redirect_stdout: промпт уходит в буфер, POST /api/chat висит вечно, а ввод
-# в консоли сервера «слепо» авторизует запись без показанного превью
-# (находка ревью). В веб-режиме подтверждения нет — write_file сразу
-# возвращает отказ; консольный агент работает как раньше
-agent.CONFIRM_WRITES = False
-
 HTML_FILE = Path(__file__).parent / "webui.html"
 SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 chat_lock = threading.Lock()
@@ -36,15 +29,15 @@ backend_ready = False
 
 # сервер слушает только 127.0.0.1 — запросы с этих хостов «свои».
 # ::1 включён: на Windows localhost может резолвиться в IPv6
-ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
-def _hostname(netloc: str) -> str:
-    """Хост из authority без порта; IPv6 в скобках сохраняет их."""
-    netloc = netloc.lower()
-    if netloc.startswith("["):
-        return netloc.partition("]")[0] + "]"
-    return netloc.partition(":")[0]
+def _hostname(netloc: str) -> str | None:
+    """Хост из authority: без порта и userinfo (urlsplit, а не разрез по
+    первому ':': 'localhost:8765@evil.com' — реальный хост evil.com, а
+    наивный парсинг отдавал 'localhost'). IPv6 отдаётся без скобок;
+    нечитаемый authority -> None — fail-closed."""
+    return urlsplit("//" + netloc).hostname
 
 
 def origin_host_check(host: str | None, origin: str | None) -> str | None:
@@ -63,9 +56,45 @@ def origin_host_check(host: str | None, origin: str | None) -> str | None:
     if origin:
         parsed = urlsplit(origin)
         if parsed.scheme not in ("http", "https") \
-                or _hostname(parsed.netloc) not in ALLOWED_HOSTS:
+                or parsed.hostname not in ALLOWED_HOSTS:
             return f"Origin {origin!r} не localhost"
     return None
+
+
+def parse_chat(payload: dict) -> tuple[str, str] | str:
+    """Нормализует payload чата: (session, message) или текст ошибки 400.
+    str() и дефолт применяются здесь, в одном месте с валидацией: раньше
+    validate_chat допускал запрос без session, а do_POST падал KeyError;
+    bool-сессия («True») проходила регэксп и уходила в путь файла."""
+    session = str(payload.get("session", "web"))
+    message = str(payload.get("message", "")).strip()
+    error = validate_chat({"session": session, "message": message})
+    return error or (session, message)
+
+
+def _ensure_backend() -> None:
+    """select_backend один раз на процесс — при первом обращении к API."""
+    global backend_ready
+    if not backend_ready:
+        try:
+            agent.select_backend()
+        except SystemExit as e:
+            # в консоли SystemExit корректен, но в HTTP-обработчике он не
+            # ловится except Exception — соединение обрывалось без 500-JSON
+            raise RuntimeError(str(e) or "модель недоступна") from e
+        backend_ready = True
+
+
+def configure_web_mode() -> None:
+    """Настройка agent под веб-режим — вызывается при старте сервера,
+    а не на import: import webui ради validate_chat/origin_host_check
+    не должен менять поведение консольного агента (находка ревью).
+    write_file подтверждает запись через input(), но stdout webui
+    перехвачен redirect_stdout: промпт уходит в буфер, POST /api/chat
+    висит вечно, а ввод в консоли сервера «слепо» авторизует запись
+    без показанного превью. В веб-режиме подтверждения нет — write_file
+    сразу возвращает отказ."""
+    agent.CONFIRM_WRITES = False
 
 
 def validate_chat(payload: dict) -> str | None:
@@ -77,14 +106,6 @@ def validate_chat(payload: dict) -> str | None:
     if not str(payload.get("message", "")).strip():
         return "пустое сообщение"
     return None
-
-
-def _ensure_backend() -> None:
-    """select_backend один раз на процесс — при первом обращении к API."""
-    global backend_ready
-    if not backend_ready:
-        agent.select_backend()
-        backend_ready = True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -133,12 +154,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            error = validate_chat(payload)
-            if error:
-                self._json(400, {"error": error})
+            parsed = parse_chat(payload)
+            if isinstance(parsed, str):
+                self._json(400, {"error": parsed})
                 return
-            session = payload["session"]
-            message = str(payload["message"]).strip()
+            session, message = parsed
             with chat_lock:
                 _ensure_backend()
                 agent.SESSION_ID = session
@@ -163,6 +183,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8765,
                         help="порт (по умолчанию 8765; 8080 занят Docker)")
     args = parser.parse_args()
+    configure_web_mode()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"GUI агента: http://localhost:{args.port}  (Ctrl+C — выход)")
     try:
