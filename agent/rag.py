@@ -18,8 +18,9 @@ import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# _stem — общий lexical-скоринг с keyword-поиском лаб. 3 (context.py)
-from context import _stem
+# _stem — общий lexical-скоринг с keyword-поиском лаб. 3 (context.py);
+# wrap_docs/sanitize_fragment — рамка данных и чистка псевдоинструкций
+from context import _stem, sanitize_fragment, wrap_docs
 
 load_dotenv()
 
@@ -169,10 +170,11 @@ def vector_search(query: str, limit: int = 3) -> str:
     if scored[0][0] < MIN_SCORE:
         return (f"ОШИБКА: нет похожих фрагментов (лучший косинус "
                 f"{scored[0][0]:.2f} ниже порога {MIN_SCORE:.2f}).")
-    return "\n\n".join(
-        f"{n}. [{c['file']} § {c['title']}] cos={score:.2f}: {c['text'][:400]}"
+    return wrap_docs("\n\n".join(
+        f"{n}. [{c['file']} § {c['title']}] cos={score:.2f}: "
+        f"{sanitize_fragment(c['text'])[:400]}"
         for n, (score, c) in enumerate(scored[:limit], 1)
-    )
+    ))
 
 
 # ---------- бонус: гибридный поиск (reciprocal rank fusion) ----------
@@ -228,11 +230,11 @@ def hybrid_search(query: str, limit: int = 3) -> str:
     for rank, i in enumerate(vec_rank, 1):
         rrf[i] = rrf.get(i, 0.0) + 1.0 / (RRF_K + rank)
     ordered = sorted(rrf, key=lambda i: -rrf[i])[:limit]
-    return "\n\n".join(
+    return wrap_docs("\n\n".join(
         f"{n}. [{index['chunks'][i]['file']} § {index['chunks'][i]['title']}] "
-        f"rrf={rrf[i]:.4f}: {index['chunks'][i]['text'][:400]}"
+        f"rrf={rrf[i]:.4f}: {sanitize_fragment(index['chunks'][i]['text'])[:400]}"
         for n, i in enumerate(ordered, 1)
-    )
+    ))
 
 
 # ---------- проверка шага 1: 6 пар фраз ----------
