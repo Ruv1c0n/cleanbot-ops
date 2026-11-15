@@ -39,7 +39,9 @@ Android console for industrial cleaning robot fleets — live telemetry, remote 
 | **Карта и планы** | план помещения, зоны уборки, позиция робота; предпросмотр плана на карте |
 | **Редактор планов** | зоны плана тапами по сетке |
 | **Офлайн-кэш** | телеметрия и сессии хранятся локально (Room), доступны без сети |
-| **Инженерное меню** | настройки робота (имя, адрес сервера — сохраняется между запусками), журнал событий |
+| **Онбординг** | пошаговое знакомство при первом запуске: что это, как подключиться к симулятору, что умеет |
+| **Настройки приложения** | адрес сервера доступен в любой момент (в том числе офлайн): валидация, статус соединения, переподключение; адрес сохраняется между запусками |
+| **Инженерное меню** | настройки робота (имя робота), журнал событий |
 | **Push-уведомления** | уведомления об ошибках роботов |
 | **Темы** | тёмная и светлая темы, Material You dynamic color (Android 12+) |
 
@@ -70,7 +72,12 @@ Android console for industrial cleaning robot fleets — live telemetry, remote 
   </tr>
   <tr>
     <td align="center"><img src="docs/screenshots/13-offline.png" width="260" alt="Оффлайн-стейт"/><br><sub><b>Оффлайн-стейт</b> — понятное состояние и «Повторить»</sub></td>
-    <td></td>
+    <td align="center"><img src="docs/screenshots/14-onboarding.png" width="260" alt="Онбординг"/><br><sub><b>Онбординг</b> — 3 шага при первом запуске</sub></td>
+    <td align="center"><img src="docs/screenshots/15-onboarding-connect.png" width="260" alt="Онбординг: подключение"/><br><sub><b>Подключение</b> — адрес симулятора на шаге 2</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/17-offline-settings.png" width="260" alt="Офлайн и настройки"/><br><sub><b>Офлайн</b> — «Повторить» и «Настройки» в один тап</sub></td>
+    <td align="center"><img src="docs/screenshots/18-settings.png" width="260" alt="Настройки"/><br><sub><b>Настройки</b> — адрес сервера, статус, переподключение</sub></td>
     <td></td>
   </tr>
 </table>
