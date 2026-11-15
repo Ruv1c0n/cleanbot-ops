@@ -38,7 +38,7 @@ def _turn_starts(messages: list) -> list:
 
 def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
                           strategy: str = STRATEGY, tools=None,
-                          summarize_fn=None) -> list:
+                          summarize_fn=None, log=None) -> list:
     """Держит историю в пределах бюджета. Размер считается вместе с
     сериализованными tools — они тоже уходят в каждый запрос. Ходы удаляются
     только целиком (user вместе с ответом ассистента и tool-сообщениями),
@@ -46,7 +46,9 @@ def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
     остаётся. system сохраняется всегда.
 
     summarize_fn — колбэк сжатия (в agent.py это summarize, зовущий модель);
-    он передаётся отдельно, чтобы тестировать стратегию summarize без сети."""
+    он передаётся отдельно, чтобы тестировать стратегию summarize без сети.
+    log — куда идут TRIM/SUMMARY-сообщения (по умолчанию print): стриминговый
+    веб-цикл передаёт on_log, иначе события бюджета невидимы в UI-логе."""
     est = estimate_tokens(messages, tools)
     if est <= budget:
         return messages
@@ -56,9 +58,10 @@ def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
         cut = starts[1]                     # граница первого хода
         dropped += messages[starts[0]:cut]
         messages = messages[:starts[0]] + messages[cut:]
+    log = log or print
     if not dropped:
-        print(f"[TRIM: превышение бюджета ({est} > {budget}), "
-              f"но кроме последнего хода удалять нечего]")
+        log(f"[TRIM: превышение бюджета ({est} > {budget}), "
+            f"но кроме последнего хода удалять нечего]")
         return messages
     if strategy == "summarize":
         if summarize_fn is None:
@@ -78,13 +81,13 @@ def ensure_context_budget(messages: list, budget: int = CONTEXT_BUDGET,
         # 4000 символами в agent.py, так что переполнение после сжатия
         # практически невозможно.
         folded = f" (+{len(old_memory)} старой памяти)" if old_memory else ""
-        print(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога"
-              f"{folded}; {est} -> {estimate_tokens(head + tail, tools)} усл. токенов]")
+        log(f"[SUMMARY: {len(dropped)} сообщений сжаты в память диалога"
+            f"{folded}; {est} -> {estimate_tokens(head + tail, tools)} усл. токенов]")
         # Роль system (сразу после основного system): некоторые OpenAI-совместимые
         # серверы плохо переносят два подряд идущих user-сообщения.
         return head + [{"role": "system", "content": summary}] + tail
-    print(f"[TRIM: удалено {len(dropped)} сообщений; "
-          f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
+    log(f"[TRIM: удалено {len(dropped)} сообщений; "
+        f"{est} -> {estimate_tokens(messages, tools)} усл. токенов]")
     return messages
 
 
