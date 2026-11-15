@@ -185,8 +185,12 @@
     background: transparent; border: 0; outline: none; max-width: 250px;
     cursor: pointer; appearance: auto;
   }
-  /* весь чип моделей кликабелен: меню открывается и по краю чипа */
-  .chip.model { cursor: pointer; }
+  /* весь чип моделей кликабелен: меню открывается и по краю чипа.
+     overflow: visible ОБЯЗАТЕЛЕН — иначе фриттое стекло чипа обрезает
+     раскрывающееся меню до тёмной полоски (клиппинг .chip стоит ради
+     многоточия заголовков, чипу моделей он не нужен: сам инпут режет
+     текст своим ellipsis) */
+  .chip.model { cursor: pointer; overflow: visible; }
   .chip.model[data-state="off"] { cursor: default; }
   .chip select:disabled { color: var(--dim); cursor: default; }
   .chip select:focus-visible { outline: 1px solid var(--brass); outline-offset: 2px; }
