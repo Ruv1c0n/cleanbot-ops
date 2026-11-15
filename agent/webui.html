@@ -1533,17 +1533,23 @@
     // без активного чата выбор ляжет в meta при первом сообщении (модель уходит в /api/chat)
   }
 
+  // клик по чипу открывает/закрывает меню; focus НЕ открывает — иначе
+  // реальный клик мышью (focus → click) мгновенно закрывал меню обратно
+  // и сменить модель было невозможно. Клавиатура: Enter/пробел на чипе.
   modelInput.addEventListener("click", e => {
     e.stopPropagation();
     if (modelMenu.hidden) openModelMenu();
     else closeModelMenu();
   });
-  modelInput.addEventListener("focus", () => {
-    if (modelMenu.hidden) openModelMenu();
+  modelInput.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (modelMenu.hidden) openModelMenu();
+      else closeModelMenu();
+    }
   });
   modelFilter.addEventListener("input", () => renderModelMenu(modelFilter.value));
   modelMenu.addEventListener("click", e => e.stopPropagation());
-  modelInput.addEventListener("click", e => e.stopPropagation());
   // клик мимо меню закрывает его
   document.addEventListener("click", closeModelMenu);
   modelFilter.addEventListener("keydown", e => {
