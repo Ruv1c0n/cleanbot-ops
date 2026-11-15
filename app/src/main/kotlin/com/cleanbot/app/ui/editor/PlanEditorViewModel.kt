@@ -47,16 +47,38 @@ class PlanEditorViewModel(
     val hasUnsavedChanges: Boolean
         get() = _sketch.value != original
 
-    fun load() {
+    /** Активная загрузка плана: повторные эмиссии CONNECTED не наслаивают запросы. */
+    private var loadInFlight = false
+
+    init {
+        // Автозагрузка при восстановлении соединения: план, не полученный во время
+        // оффлайна, оставлял редактор в вечном спиннере (sketch==null && CONNECTED —
+        // офлайн-кнопка «Повторить» уже не показывается).
         viewModelScope.launch {
-            runCatching { repository.plan(robotId) }.onSuccess { plan ->
-                // route в эскизе не нужен: PUT его игнорирует, а пересчитывает симулятор
-                val clean = plan.copy(route = emptyList())
-                original = clean
-                _sketch.value = clean
-                if (clean.zones.isEmpty()) _activeZoneIndex.value = -1
-                else _activeZoneIndex.value = 0
-            }.onFailure { _message.value = "Не удалось загрузить план: ${it.message}" }
+            connectionState.collect { state ->
+                if (state == ConnectionState.CONNECTED && _sketch.value == null) {
+                    load()
+                }
+            }
+        }
+    }
+
+    fun load() {
+        if (loadInFlight) return
+        loadInFlight = true
+        viewModelScope.launch {
+            try {
+                runCatching { repository.plan(robotId) }.onSuccess { plan ->
+                    // route в эскизе не нужен: PUT его игнорирует, а пересчитывает симулятор
+                    val clean = plan.copy(route = emptyList())
+                    original = clean
+                    _sketch.value = clean
+                    if (clean.zones.isEmpty()) _activeZoneIndex.value = -1
+                    else _activeZoneIndex.value = 0
+                }.onFailure { _message.value = "Не удалось загрузить план: ${it.message}" }
+            } finally {
+                loadInFlight = false
+            }
         }
     }
 

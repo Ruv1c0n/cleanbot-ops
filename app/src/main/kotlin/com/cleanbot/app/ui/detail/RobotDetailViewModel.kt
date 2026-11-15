@@ -73,6 +73,22 @@ class RobotDetailViewModel(
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
+    /** Активная загрузка плана: повторные эмиссии CONNECTED не наслаивают запросы. */
+    private var planLoadInFlight = false
+
+    init {
+        // Автозагрузка при восстановлении соединения: план, не полученный во время
+        // оффлайна, оставлял вкладку «Карта» в вечном спиннере (sketch==null &&
+        // CONNECTED — офлайн-кнопка «Повторить» уже не показывается).
+        viewModelScope.launch {
+            connectionState.collect { state ->
+                if (state == ConnectionState.CONNECTED && _plan.value == null) {
+                    loadPlan()
+                }
+            }
+        }
+    }
+
     fun sendCommand(command: String) {
         viewModelScope.launch {
             runCatching { repository.sendCommand(robotId, command) }
@@ -109,8 +125,14 @@ class RobotDetailViewModel(
     }
 
     fun loadPlan() {
+        if (planLoadInFlight) return
+        planLoadInFlight = true
         viewModelScope.launch {
-            runCatching { repository.plan(robotId) }.onSuccess { _plan.value = it }
+            try {
+                runCatching { repository.plan(robotId) }.onSuccess { _plan.value = it }
+            } finally {
+                planLoadInFlight = false
+            }
         }
     }
 
