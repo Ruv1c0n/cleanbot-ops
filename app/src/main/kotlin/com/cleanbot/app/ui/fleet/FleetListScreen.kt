@@ -1,6 +1,5 @@
 package com.cleanbot.app.ui.fleet
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,15 +13,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -36,13 +36,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cleanbot.app.data.repository.ConnectionState
 import com.cleanbot.app.data.repository.RobotUiState
+import com.cleanbot.app.ui.components.ConnectionDot
 import com.cleanbot.app.ui.components.ErrorBadge
+import com.cleanbot.app.ui.components.OfflineState
 import com.cleanbot.app.ui.components.StateBadge
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FleetListScreen(
     onRobotClick: (String) -> Unit,
+    onOpenSettings: () -> Unit = {},
     viewModel: FleetListViewModel = viewModel()
 ) {
     val robots by viewModel.robots.collectAsStateWithLifecycle()
@@ -57,6 +60,9 @@ fun FleetListScreen(
                 title = { Text("Парк роботов") },
                 actions = {
                     ConnectionDot(connection)
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Outlined.Settings, contentDescription = "Настройки")
+                    }
                     Spacer(Modifier.width(16.dp))
                 }
             )
@@ -68,7 +74,12 @@ fun FleetListScreen(
                 when (connection) {
                     // Рыночный стандарт вместо вечного спиннера: понятный
                     // оффлайн-стейт с повтором (аудит 2026-11-11).
-                    ConnectionState.DISCONNECTED -> OfflineState(onRetry = viewModel::refresh)
+                    ConnectionState.DISCONNECTED -> OfflineState(
+                        onRetry = viewModel::refresh,
+                        onOpenSettings = onOpenSettings,
+                        hint = "Проверь, что симулятор запущен, и адрес верен —\n" +
+                            "он задаётся в настройках приложения."
+                    )
                     else -> CircularProgressIndicator()
                 }
             }
@@ -84,35 +95,6 @@ fun FleetListScreen(
             }
         }
     }
-}
-
-@Composable
-private fun OfflineState(onRetry: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Нет связи с симулятором", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Проверь, что симулятор запущен, и адрес верен —\nон задаётся в инженерном меню робота.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = onRetry) { Text("Повторить") }
-    }
-}
-
-@Composable
-private fun ConnectionDot(state: ConnectionState) {
-    val color = when (state) {
-        ConnectionState.CONNECTED -> MaterialTheme.colorScheme.primary
-        ConnectionState.CONNECTING -> MaterialTheme.colorScheme.tertiary
-        ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.error
-    }
-    Box(
-        modifier = Modifier
-            .size(10.dp)
-            .background(color, shape = CircleShape)
-    )
 }
 
 @Composable

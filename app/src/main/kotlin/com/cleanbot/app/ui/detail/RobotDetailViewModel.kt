@@ -7,6 +7,7 @@ import com.cleanbot.app.data.model.LogEntry
 import com.cleanbot.app.data.model.RobotSettings
 import com.cleanbot.app.data.model.Schedule
 import com.cleanbot.app.data.model.Session
+import com.cleanbot.app.data.repository.ConnectionState
 import com.cleanbot.app.data.repository.RobotRepository
 import com.cleanbot.app.data.repository.RobotUiState
 import com.cleanbot.app.di.AppContainer
@@ -19,7 +20,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import com.cleanbot.app.data.remote.ServerConfig
 
 /** Период статистики; days == null — вся история. */
 enum class StatsPeriod(val label: String, val days: Int?) {
@@ -36,6 +36,9 @@ class RobotDetailViewModel(
     val robot: StateFlow<RobotUiState?> = repository.robots
         .map { it[robotId] }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /** Связь с симулятором: вкладки деталей показывают оффлайн-стейт вместо спиннера. */
+    val connectionState: StateFlow<ConnectionState> = repository.connectionState
 
     private val _schedule = MutableStateFlow<List<Schedule>>(emptyList())
     val schedule: StateFlow<List<Schedule>> = _schedule.asStateFlow()
@@ -161,14 +164,12 @@ class RobotDetailViewModel(
         }
     }
 
-    fun saveSettings(newSettings: RobotSettings, hostPort: String) {
+    fun saveSettings(newSettings: RobotSettings) {
         viewModelScope.launch {
-            // PUT уходит на ещё действующий адрес; сам адрес сервера и локальные
-            // настройки меняем только при успехе, иначе «сохранение» было бы ложью.
+            // Адрес сервера больше не часть этой формы — он редактируется в настройках
+            // приложения (ui/settings); здесь остаётся только PUT имени робота.
             runCatching { repository.updateSettings(newSettings) }
                 .onSuccess {
-                    ServerConfig.hostPort.value = hostPort
-                    AppContainer.saveServerAddress(hostPort)
                     repository.refreshFleet()
                     _settings.value = newSettings
                 }
@@ -180,5 +181,21 @@ class RobotDetailViewModel(
 
     fun clearError() {
         _lastError.value = null
+    }
+
+    /**
+     * Повторная загрузка после оффлайн-стейта: стандартный путь загрузки —
+     * сводка парка + данные, которые вкладки тянут по требованию.
+     */
+    fun retry() {
+        viewModelScope.launch {
+            repository.refreshFleet()
+        }
+        loadPlan()
+        loadSchedule()
+        loadSessions()
+        loadStats()
+        loadLogs()
+        loadSettings()
     }
 }

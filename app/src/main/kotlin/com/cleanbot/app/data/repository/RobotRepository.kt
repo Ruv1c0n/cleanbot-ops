@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicLong
 import com.cleanbot.app.data.remote.ServerConfig
 import com.cleanbot.app.notification.RobotErrorNotifier
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 
 enum class ConnectionState { CONNECTING, CONNECTED, DISCONNECTED }
@@ -87,9 +88,20 @@ class RobotRepository(
         }
     }
 
+    /**
+     * Тик переподключения: reconnect() перезапускает цикл телеметрии даже без
+     * смены адреса (одинаковое значение StateFlow не эммитится).
+     */
+    private val reconnectTick = MutableStateFlow(0L)
+
+    /** Ручное переподключение (экран настроек) без смены адреса. */
+    fun reconnect() {
+        reconnectTick.value += 1
+    }
+
     fun startTelemetryLoop(scope: CoroutineScope) {
         scope.launch {
-            ServerConfig.hostPort.collectLatest {
+            combine(ServerConfig.hostPort, reconnectTick) { host, _ -> host }.collectLatest {
                 while (isActive) {
                     _connectionState.value = ConnectionState.CONNECTING
                     runCatching {

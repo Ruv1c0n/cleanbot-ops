@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.cleanbot.app.data.model.Cell
 import com.cleanbot.app.data.model.CleaningPlan
 import com.cleanbot.app.data.model.Zone
+import com.cleanbot.app.data.repository.ConnectionState
 import com.cleanbot.app.data.repository.RobotRepository
 import com.cleanbot.app.di.AppContainer
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,9 @@ class PlanEditorViewModel(
 
     private val _sketch = MutableStateFlow<CleaningPlan?>(null)
     val sketch: StateFlow<CleaningPlan?> = _sketch.asStateFlow()
+
+    /** Связь с симулятором: экран редактора показывает оффлайн-стейт вместо спиннера. */
+    val connectionState: StateFlow<ConnectionState> = repository.connectionState
 
     /** Эскиз, загруженный с сервера: с ним сравниваем, есть ли несохранённые изменения. */
     private var original: CleaningPlan? = null
@@ -58,6 +62,11 @@ class PlanEditorViewModel(
 
     fun setActiveZone(index: Int) {
         _activeZoneIndex.value = index
+    }
+
+    /** Повторная загрузка плана после оффлайн-стейта (стандартный путь — load()). */
+    fun retry() {
+        load()
     }
 
     /**
