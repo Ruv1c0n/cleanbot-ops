@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import context
+import providers
 import webui
 
 
@@ -666,3 +667,186 @@ def test_chat_stream_events_pings_on_silence(sessions_ws, monkeypatch):
     names = [n for n, _ in events]
     assert names[-1] == "done"
     assert names.count("ping") >= 2
+
+
+# ---------- провайдеры моделей по API-ключу ----------
+# свой OpenAI-совместимый бэкенд (base_url + api_key) добавляется в веб-чате;
+# файл agent/providers.json с ключами в git не попадает
+
+@pytest.fixture
+def providers_ws(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers, "PROVIDERS_FILE",
+                        tmp_path / "providers.json")
+    return tmp_path
+
+
+def test_provider_validation():
+    ok = providers.validate_provider(
+        {"name": " OpenRouter ", "base_url": "https://openrouter.ai/api/v1",
+         "api_key": "sk-or-x"})
+    assert ok == {"name": "OpenRouter",
+                  "base_url": "https://openrouter.ai/api/v1",
+                  "api_key": "sk-or-x", "enabled": True}
+    assert isinstance(providers.validate_provider(
+        {"name": "", "base_url": "https://x/v1", "api_key": "k"}), str)
+    assert isinstance(providers.validate_provider(
+        {"name": "n/a", "base_url": "https://x/v1", "api_key": "k"}), str)
+    assert isinstance(providers.validate_provider(
+        {"name": "провайдер", "base_url": "ftp://x", "api_key": "k"}), str)
+    assert isinstance(providers.validate_provider(
+        {"name": "провайдер", "base_url": "not a url", "api_key": "k"}), str)
+    assert isinstance(providers.validate_provider(
+        {"name": "провайдер", "base_url": "https://x/v1", "api_key": ""}), str)
+    assert isinstance(providers.validate_provider(
+        {"name": "провайдер", "base_url": "https://x/v1", "api_key": "k",
+         "foo": 1}), str)
+    assert isinstance(providers.validate_provider(
+        ["не", "dict"]), str)
+
+
+def test_provider_mask_and_public_view():
+    assert providers.mask_key("sk-or-v1-abcd1234") == "***1234"
+    assert providers.mask_key("k") == "***k"
+    assert providers.mask_key("") == "нет ключа"
+    view = providers.public_view({"name": "p", "base_url": "https://x/v1",
+                                  "api_key": "secret-key-1234",
+                                  "enabled": True})
+    assert view == {"name": "p", "base_url": "https://x/v1", "enabled": True,
+                    "key_mask": "***1234"}
+    assert "secret" not in json.dumps(view)  # ключ не утекает в ответ
+
+
+def test_providers_broken_file_returns_empty(providers_ws):
+    # битый JSON / не-список / битые записи не роняют читателя
+    providers.PROVIDERS_FILE.write_text("{битый", encoding="utf-8")
+    assert providers.load_providers() == []
+    providers.PROVIDERS_FILE.write_text(
+        json.dumps([{"name": "ок", "base_url": "https://x/v1",
+                     "api_key": "k1", "enabled": True},
+                    "мусор",
+                    {"name": ""}]), encoding="utf-8")
+    assert [p["name"] for p in providers.load_providers()] == ["ок"]
+
+
+def test_providers_crud_cycle(providers_ws):
+    code, body = webui.provider_create(
+        {"name": "test-prov", "base_url": "http://127.0.0.1:9/v1",
+         "api_key": "sk-test-9999"})
+    assert code == 200 and body["name"] == "test-prov"
+    assert body["key_mask"] == "***9999"
+    on_disk = json.loads(providers.PROVIDERS_FILE.read_text(encoding="utf-8"))
+    assert on_disk[0]["api_key"] == "sk-test-9999"  # ключ на диске полный
+
+    # дубликат name -> 400
+    code, body = webui.provider_create(
+        {"name": "test-prov", "base_url": "http://127.0.0.1:9/v1",
+         "api_key": "other"})
+    assert code == 400 and "уже существует" in body["error"]
+    # валидация -> 400
+    code, _ = webui.provider_create(
+        {"name": "плохой", "base_url": "не url", "api_key": "k"})
+    assert code == 400
+
+    assert [p["name"] for p in webui.providers_public()] == ["test-prov"]
+
+    # удаление: 200, затем 404
+    assert webui.provider_delete("test-prov") == (200, {"ok": True})
+    code, body = webui.provider_delete("test-prov")
+    assert code == 404
+    assert webui.providers_public() == []
+
+
+def test_providers_cache_invalidation_on_crud(providers_ws):
+    # без сброса TTL-кэша новый провайдер 30с невидим, а удалённый висит
+    # призраком — сброс делается в provider_create/provider_delete
+    webui.agent._model_ids_cache["http://127.0.0.1:9/v1"] = (1.0, ["m"])
+    webui.provider_create({"name": "c1", "base_url": "http://127.0.0.1:9/v1",
+                           "api_key": "k"})
+    assert "http://127.0.0.1:9/v1" not in webui.agent._model_ids_cache
+    webui.agent._model_ids_cache["http://127.0.0.1:9/v1"] = (1.0, ["m"])
+    webui.provider_delete("c1")
+    assert "http://127.0.0.1:9/v1" not in webui.agent._model_ids_cache
+
+
+def test_resolve_model_provider_backend(providers_ws, monkeypatch):
+    monkeypatch.setattr(webui.agent, "active", {"model": "local-m"})
+    monkeypatch.setattr(webui.agent, "client", object())
+    # тестовые бэкенды вместо реальных .env: id-карты привязаны к base_url
+    monkeypatch.setattr(webui.agent, "LOCAL",
+                        {"base_url": "http://local/v1", "api_key": "k",
+                         "model": "local-m"})
+    monkeypatch.setattr(webui.agent, "FALLBACK",
+                        {"base_url": "http://online/v1", "api_key": "k",
+                         "model": "online-m"})
+
+    def fake_make_client(cfg):
+        return ("client", cfg["base_url"])
+
+    fake_ids = {
+        "http://local/v1": ["local-m"],
+        "http://online/v1": ["online-m"],
+        "https://prov.example/v1": ["p-model", "shared-id"],
+    }
+
+    def fake_ids_for(cfg):
+        return list(fake_ids.get(cfg.get("base_url"), []))
+
+    monkeypatch.setattr(webui.agent, "make_client", fake_make_client)
+    monkeypatch.setattr(webui.agent, "_backend_model_ids", fake_ids_for)
+    providers.save_providers([{"name": "prov", "enabled": True,
+                               "base_url": "https://prov.example/v1",
+                               "api_key": "k"}])
+
+    client_, model_name, backend = webui.agent.resolve_model("p-model")
+    assert client_ == ("client", "https://prov.example/v1")
+    assert model_name == "p-model"
+    assert backend["base_url"] == "https://prov.example/v1"
+
+    # коллизия id с LOCAL решается в пользу локального бэкенда
+    fake_ids["http://local/v1"].append("shared-id")
+    client_, _, backend = webui.agent.resolve_model("shared-id")
+    assert backend is webui.agent.LOCAL
+
+    # выключенный провайдер не участвует
+    providers.save_providers([{"name": "prov", "enabled": False,
+                               "base_url": "https://prov.example/v1",
+                               "api_key": "k"}])
+    with pytest.raises(LookupError):
+        webui.agent.resolve_model("p-model")
+
+    # выключенный после включения: неизвестный id -> LookupError (удаление
+    # провайдера из providers_ws-состояния)
+    providers.save_providers([])
+    with pytest.raises(LookupError):
+        webui.agent.resolve_model("p-model")
+
+
+def test_provider_model_groups(providers_ws, monkeypatch):
+    monkeypatch.setattr(webui.agent, "_backend_model_ids", lambda cfg:
+        ["m1", "bge-m3:latest", "shared"]
+        if cfg["base_url"] == "https://p.example/v1" else ["only-p2"])
+    # base_ids = local/online: у них есть shared, у prov1 — свой m1
+    providers.save_providers([
+        {"name": "prov1", "enabled": True, "base_url": "https://p.example/v1",
+         "api_key": "k"},
+        {"name": "prov2", "enabled": True, "base_url": "https://p2.example/v1",
+         "api_key": "k"},
+    ])
+    # shared прячется: коллизия с local/online решается в их пользу;
+    # bge-m3 фильтруется как эмбеддинг-модель
+    groups = webui.provider_model_groups(["local-m", "shared"])
+    assert groups == [{"name": "prov1", "models": ["m1"]},
+                      {"name": "prov2", "models": ["only-p2"]}]
+
+
+def test_redact_masks_known_keys(providers_ws, monkeypatch):
+    monkeypatch.setenv("API_KEY", "ollama-local-secret")
+    monkeypatch.delenv("FALLBACK_API_KEY", raising=False)
+    providers.save_providers([{"name": "p", "enabled": True,
+                               "base_url": "https://x/v1",
+                               "api_key": "sk-provider-777"}])
+    text = providers.redact(
+        "Unauthorized 401 for https://x/v1: key sk-provider-777 "
+        "and ollama-local-secret invalid")
+    assert "sk-provider-777" not in text and "ollama-local-secret" not in text
+    assert "***" in text

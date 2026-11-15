@@ -16,6 +16,9 @@ from context import (CONTEXT_BUDGET, ENVELOPE_CLOSE, ENVELOPE_OPEN, STRATEGY,
                      ensure_context_budget, safe_path, search_docs)
 # лаб. 4: векторный поиск по смыслу (эмбеддинги, индекс на диске)
 from rag import vector_search
+# провайдеры моделей по API-ключу (webui): собственные OpenAI-совместимые
+# бэкенды из providers.json; файл может отсутствовать — load вернёт []
+import providers
 
 load_dotenv()
 
@@ -120,7 +123,10 @@ def resolve_model(model_id=None):
     """Per-request выбор модели: (client, model_name, backend) по id.
     None/пусто или id активной модели -> глобальные client/active (без новых
     сетевых вызовов). Иначе id ищется сначала в локальном списке, потом
-    онлайн. Неизвестный id -> LookupError с перечнем доступных (webui
+    онлайн, потом у включённых провайдеров пользователя (порядок —
+    коллизии id в пользу дефолтных бэкендов, как в merge_models). У
+    провайдера свой client через make_client: base_url и ключ свои.
+    Неизвестный id -> LookupError с перечнем доступных (webui
     превращает его в 400 с этим текстом)."""
     if not model_id:
         return client, active["model"], active
@@ -132,9 +138,14 @@ def resolve_model(model_id=None):
     online = _backend_model_ids(FALLBACK)
     if model_id in online:
         return make_client(FALLBACK), model_id, FALLBACK
-    known = sorted(set(local) | set(online))
+    known = set(local) | set(online)
+    for cfg in providers.enabled_backends():
+        ids = _backend_model_ids(cfg)
+        known |= set(ids)
+        if model_id in ids:
+            return make_client(cfg), model_id, cfg
     raise LookupError("неизвестная модель {!r}; доступные: {}".format(
-        model_id, ", ".join(known) or "(нет)"))
+        model_id, ", ".join(sorted(known)) or "(нет)"))
 
 
 # лимит шагов цикла

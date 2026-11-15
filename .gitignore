@@ -39,6 +39,11 @@ agent/workspace/*
 !agent/workspace/docs
 agent/sessions/*
 !agent/sessions/.gitkeep
+# провайдеры моделей по API-ключу (webui): файл содержит ключи
+# (tmp-файл тоже: save_providers пишет в него перед os.replace — упавший
+# процесс мог оставить ключи в нём)
+agent/providers.json
+agent/providers.json.tmp
 agent/.venv
 __pycache__/
 
