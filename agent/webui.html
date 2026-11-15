@@ -185,6 +185,9 @@
     background: transparent; border: 0; outline: none; max-width: 250px;
     cursor: pointer; appearance: auto;
   }
+  /* весь чип моделей кликабелен: меню открывается и по краю чипа */
+  .chip.model { cursor: pointer; }
+  .chip.model[data-state="off"] { cursor: default; }
   .chip select:disabled { color: var(--dim); cursor: default; }
   .chip select:focus-visible { outline: 1px solid var(--brass); outline-offset: 2px; }
   .chip select option, .chip select optgroup { background: var(--surface); color: var(--ink); }
@@ -1536,7 +1539,13 @@
   // клик по чипу открывает/закрывает меню; focus НЕ открывает — иначе
   // реальный клик мышью (focus → click) мгновенно закрывал меню обратно
   // и сменить модель было невозможно. Клавиатура: Enter/пробел на чипе.
-  modelInput.addEventListener("click", e => {
+  // клик в ЛЮБУЮ точку чипа (инпут, LED-точку, паддинги) открывает/закрывает
+  // меню: раньше обработчик был только на инпуте — клик по краю чипа ничего
+  // не делал, и сменить модель было невозможно. Клик по самому меню гасится
+  // его собственным stopPropagation и сюда не доходит.
+  modelChip.addEventListener("click", e => {
+    // stopPropagation обязателен: без него клик всплывает до document-хендлера
+    // «клик мимо меню» и закрывает только что открытое меню в том же событии
     e.stopPropagation();
     if (modelMenu.hidden) openModelMenu();
     else closeModelMenu();
