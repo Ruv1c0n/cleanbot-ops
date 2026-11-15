@@ -26,6 +26,7 @@ object AppContainer {
 
     private const val PREFS = "cleanbot"
     private const val KEY_HOST_PORT = "host_port"
+    private const val KEY_ONBOARDING_DONE = "onboarding_done"
 
     /** Вызывается из [com.cleanbot.app.CleanBotApp.onCreate] до первого доступа к UI. */
     fun init(context: Context) {
@@ -38,15 +39,28 @@ object AppContainer {
             CleanBotDatabase.NAME
         ).build()
         // Адрес сервера переживает перезапуск (сохраняется при успешном PUT настроек).
-        val saved = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_HOST_PORT, null)
+        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_HOST_PORT, null)
         if (!saved.isNullOrBlank()) ServerConfig.hostPort.value = saved
+        // Онбординг показывается только один раз — до первого завершения.
+        onboardingDone = prefs.getBoolean(KEY_ONBOARDING_DONE, false)
     }
 
     /** Сохраняет адрес сервера между запусками; вызывается при успешном сохранении настроек. */
     fun saveServerAddress(hostPort: String) {
         appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putString(KEY_HOST_PORT, hostPort).apply()
+    }
+
+    /** Признак завершённого онбординга; читается в [init] до первой навигации. */
+    var onboardingDone: Boolean = false
+        private set
+
+    /** Фиксирует завершение онбординга: больше не показывается ни при каких перезапусках. */
+    fun markOnboardingDone() {
+        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_ONBOARDING_DONE, true).apply()
+        onboardingDone = true
     }
 
     val robotRepository: RobotRepository by lazy {

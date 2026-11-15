@@ -1,6 +1,7 @@
 package com.cleanbot.app.ui.detail
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,8 +26,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cleanbot.app.data.repository.ConnectionState
 import com.cleanbot.app.di.AppContainer
 import com.cleanbot.app.ui.components.ErrorBadge
+import com.cleanbot.app.ui.components.OfflineState
 import com.cleanbot.app.ui.components.StateBadge
 
 @Composable
@@ -34,6 +37,7 @@ fun DashboardTab(viewModel: RobotDetailViewModel) {
     val robot by viewModel.robot.collectAsStateWithLifecycle()
     val lastError by viewModel.lastError.collectAsStateWithLifecycle()
     val plan by viewModel.plan.collectAsStateWithLifecycle()
+    val connection by viewModel.connectionState.collectAsStateWithLifecycle()
     val r = robot
 
     // План нужен предпросмотру; тянем его и здесь, а не только в MapTab.
@@ -64,7 +68,18 @@ fun DashboardTab(viewModel: RobotDetailViewModel) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         if (r == null) {
-            CircularProgressIndicator()
+            // Телеметрия не пришла: вместо вечного спиннера — оффлайн-стейт,
+            // спиннер остаётся только пока идёт подключение (аудит 2026-11-11).
+            when (connection) {
+                ConnectionState.DISCONNECTED -> Box(
+                    Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    OfflineState(onRetry = viewModel::retry)
+                }
+                // CONNECTING — ждём; CONNECTED без телеметрии — краткая пауза до батча
+                else -> CircularProgressIndicator()
+            }
             return@Column
         }
 

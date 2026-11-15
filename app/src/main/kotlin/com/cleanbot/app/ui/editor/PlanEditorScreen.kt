@@ -65,6 +65,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.cleanbot.app.data.model.Cell
+import com.cleanbot.app.data.repository.ConnectionState
+import com.cleanbot.app.ui.components.OfflineState
 import com.cleanbot.app.ui.theme.MapBackground
 import com.cleanbot.app.ui.theme.MapGridLine
 import com.cleanbot.app.ui.theme.ZoneColors
@@ -89,6 +91,7 @@ fun PlanEditorScreen(robotId: String, onBack: () -> Unit) {
     val message by viewModel.message.collectAsStateWithLifecycle()
     val saving by viewModel.saving.collectAsStateWithLifecycle()
     val saved by viewModel.saved.collectAsStateWithLifecycle()
+    val connection by viewModel.connectionState.collectAsStateWithLifecycle()
 
     val snackbar = remember { SnackbarHostState() }
     var confirmExit by rememberSaveable { mutableStateOf(false) }
@@ -130,6 +133,15 @@ fun PlanEditorScreen(robotId: String, onBack: () -> Unit) {
     ) { padding ->
         val p = sketch
         when {
+            // План не загружен: вместо вечного спиннера — оффлайн-стейт с повтором;
+            // при подключённом сервере ошибка загрузки уже уходит в снекбар (аудит 2026-11-11).
+            p == null && connection == ConnectionState.DISCONNECTED -> Column(
+                Modifier.fillMaxSize().padding(padding),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                OfflineState(onRetry = viewModel::retry)
+            }
             p == null -> Column(
                 Modifier.fillMaxSize().padding(padding),
                 horizontalAlignment = Alignment.CenterHorizontally,

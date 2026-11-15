@@ -26,12 +26,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cleanbot.app.data.model.CleaningPlan
+import com.cleanbot.app.data.repository.ConnectionState
+import com.cleanbot.app.ui.components.OfflineState
 import com.cleanbot.app.ui.theme.ZoneColors
 
 @Composable
 fun MapTab(viewModel: RobotDetailViewModel, onEditPlan: () -> Unit) {
     val plan by viewModel.plan.collectAsStateWithLifecycle()
     val robot by viewModel.robot.collectAsStateWithLifecycle()
+    val connection by viewModel.connectionState.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadPlan() }
 
@@ -43,6 +46,14 @@ fun MapTab(viewModel: RobotDetailViewModel, onEditPlan: () -> Unit) {
 
         val p = plan
         when {
+            // План не загружен: вместо вечного спиннера — оффлайн-стейт с повтором,
+            // спиннер остаётся только пока идёт подключение (аудит 2026-11-11).
+            p == null && connection == ConnectionState.DISCONNECTED -> Box(
+                Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                OfflineState(onRetry = viewModel::retry)
+            }
             p == null -> CircularProgressIndicator()
             else -> {
                 PlanMapView(

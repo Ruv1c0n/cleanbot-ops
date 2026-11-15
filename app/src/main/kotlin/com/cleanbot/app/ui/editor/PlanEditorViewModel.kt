@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.cleanbot.app.data.model.Cell
 import com.cleanbot.app.data.model.CleaningPlan
 import com.cleanbot.app.data.model.Zone
+import com.cleanbot.app.data.repository.ConnectionState
 import com.cleanbot.app.data.repository.RobotRepository
 import com.cleanbot.app.di.AppContainer
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,9 @@ class PlanEditorViewModel(
 
     private val _sketch = MutableStateFlow<CleaningPlan?>(null)
     val sketch: StateFlow<CleaningPlan?> = _sketch.asStateFlow()
+
+    /** Связь с симулятором: экран редактора показывает оффлайн-стейт вместо спиннера. */
+    val connectionState: StateFlow<ConnectionState> = repository.connectionState
 
     /** Эскиз, загруженный с сервера: с ним сравниваем, есть ли несохранённые изменения. */
     private var original: CleaningPlan? = null
@@ -43,21 +47,48 @@ class PlanEditorViewModel(
     val hasUnsavedChanges: Boolean
         get() = _sketch.value != original
 
-    fun load() {
+    /** Активная загрузка плана: повторные эмиссии CONNECTED не наслаивают запросы. */
+    private var loadInFlight = false
+
+    init {
+        // Автозагрузка при восстановлении соединения: план, не полученный во время
+        // оффлайна, оставлял редактор в вечном спиннере (sketch==null && CONNECTED —
+        // офлайн-кнопка «Повторить» уже не показывается).
         viewModelScope.launch {
-            runCatching { repository.plan(robotId) }.onSuccess { plan ->
-                // route в эскизе не нужен: PUT его игнорирует, а пересчитывает симулятор
-                val clean = plan.copy(route = emptyList())
-                original = clean
-                _sketch.value = clean
-                if (clean.zones.isEmpty()) _activeZoneIndex.value = -1
-                else _activeZoneIndex.value = 0
-            }.onFailure { _message.value = "Не удалось загрузить план: ${it.message}" }
+            connectionState.collect { state ->
+                if (state == ConnectionState.CONNECTED && _sketch.value == null) {
+                    load()
+                }
+            }
+        }
+    }
+
+    fun load() {
+        if (loadInFlight) return
+        loadInFlight = true
+        viewModelScope.launch {
+            try {
+                runCatching { repository.plan(robotId) }.onSuccess { plan ->
+                    // route в эскизе не нужен: PUT его игнорирует, а пересчитывает симулятор
+                    val clean = plan.copy(route = emptyList())
+                    original = clean
+                    _sketch.value = clean
+                    if (clean.zones.isEmpty()) _activeZoneIndex.value = -1
+                    else _activeZoneIndex.value = 0
+                }.onFailure { _message.value = "Не удалось загрузить план: ${it.message}" }
+            } finally {
+                loadInFlight = false
+            }
         }
     }
 
     fun setActiveZone(index: Int) {
         _activeZoneIndex.value = index
+    }
+
+    /** Повторная загрузка плана после оффлайн-стейта (стандартный путь — load()). */
+    fun retry() {
+        load()
     }
 
     /**

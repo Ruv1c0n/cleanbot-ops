@@ -36,12 +36,15 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import com.cleanbot.app.data.repository.ConnectionState
 
 private val dayNames = listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 
 @Composable
 fun ScheduleTab(viewModel: RobotDetailViewModel, robotId: String) {
     val schedule by viewModel.schedule.collectAsStateWithLifecycle()
+    val connection by viewModel.connectionState.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf<List<Schedule>>(emptyList()) }
 
@@ -70,6 +73,12 @@ fun ScheduleTab(viewModel: RobotDetailViewModel, robotId: String) {
         Spacer(Modifier.height(8.dp))
 
         val items = if (editing) draft else schedule
+        // Лёгкий офлайн-баннер вместо «молчаливого» пустого списка:
+        // расписание не загружено из-за недоступного симулятора (аудит 2026-11-11).
+        if (schedule.isEmpty() && connection == ConnectionState.DISCONNECTED) {
+            ScheduleOfflineBanner()
+            Spacer(Modifier.height(8.dp))
+        }
         if (items.isEmpty()) {
             Text("Записей нет", style = MaterialTheme.typography.bodyMedium)
         }
@@ -100,6 +109,23 @@ fun ScheduleTab(viewModel: RobotDetailViewModel, robotId: String) {
                 }
             }
         }
+    }
+}
+
+/** Метка «офлайн» над пустым расписанием: по образцу OfflineBanner из SessionsTab. */
+@Composable
+private fun ScheduleOfflineBanner(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Text(
+            "Офлайн — расписание не загружено",
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
