@@ -815,3 +815,85 @@ def test_run_agent_stream_system_note_in_request_not_history(sessions_ws):
     assert msgs[1]["content"] == "привет"           # user-история не тронута
     saved = json.loads((sessions_ws / "sn.json").read_text(encoding="utf-8"))
     assert [m for m in saved if m["role"] == "user"][-1]["content"] == "привет"
+
+
+# ---------- проверки 2026-11-15 (полная проверка webui): закрытие стрима,
+# TTL-кэш моделей, персистенция лимита шагов ----------
+
+def test_run_agent_stream_closes_upstream_stream(sessions_ws):
+    # P1: upstream-стрим закрывается ЯВНО, в том числе при нормальном
+    # завершении — брошенный без close() поток оставлял Ollama генерировать
+    # до конца (зомби-слоты клинили очередь после обрывов клиента)
+    closed = {"flag": False}
+
+    class FakeStream:
+        def __init__(self):
+            self.sent = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.sent:
+                raise StopIteration
+            self.sent = True
+            return content_chunk("привет", finish="stop")
+
+        def close(self):
+            closed["flag"] = True
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=lambda **kwargs: FakeStream())))
+    res = agent.run_agent_stream(
+        [{"role": "user", "content": "х"}], on_delta=lambda t: None,
+        session_id="cls", client=client, model_name="fake",
+        backend=agent.LOCAL)
+    assert res["answer"] == "привет"
+    assert closed["flag"] is True
+
+
+def test_backend_model_ids_uses_ttl_cache(monkeypatch):
+    # resolve_model опрашивал оба бэкенда на каждое сообщение: латентность.
+    # 30с TTL — списки моделей не меняются чаще
+    agent._model_ids_cache.clear()
+    calls = {"n": 0}
+
+    class Resp:
+        data = [SimpleNamespace(id="m1")]
+
+    def fake_make(cfg):
+        calls["n"] += 1
+        return SimpleNamespace(with_options=lambda timeout=None:
+                               SimpleNamespace(models=SimpleNamespace(
+                                   list=lambda: Resp())))
+
+    monkeypatch.setattr(agent, "make_client", fake_make)
+    ids1 = agent._backend_model_ids({"base_url": "u1"})
+    ids2 = agent._backend_model_ids({"base_url": "u1"})
+    assert ids1 == ids2 == ["m1"]
+    assert calls["n"] == 1
+    # негативный результат не кэшируется: поднятый бэкенд подхватится сразу
+    def failing_make(cfg):
+        calls["n"] += 1
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(agent, "make_client", failing_make)
+    assert agent._backend_model_ids({"base_url": "u2"}) == []
+    assert agent._backend_model_ids({"base_url": "u2"}) == []
+    assert calls["n"] == 3
+    agent._model_ids_cache.clear()
+
+
+def test_run_agent_stream_persists_step_limit_message(sessions_ws, monkeypatch):
+    # «Достигнут лимит шагов» сохраняется в историю: раньше заглушка была
+    # только в ответе и исчезала после перезагрузки страницы
+    monkeypatch.setattr(agent, "MAX_STEPS", 1)
+    client, _ = make_stream_client([tool_chunk(0, "c1", "list_files", "{}")])
+    res = agent.run_agent_stream(
+        [{"role": "user", "content": "х"}], on_delta=lambda t: None,
+        session_id="lim", client=client, model_name="fake",
+        backend=agent.LOCAL)
+    assert res["answer"] == "Достигнут лимит шагов, задача не завершена."
+    hist = agent.load_session("lim", "system")
+    assert hist[-1] == {"role": "assistant",
+                        "content": "Достигнут лимит шагов, задача не завершена."}

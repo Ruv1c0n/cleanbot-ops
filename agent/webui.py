@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import agent
 import context
+import rag
 
 HTML_FILE = Path(__file__).parent / "webui.html"
 SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -183,6 +184,14 @@ def validate_fork(payload) -> int | str:
     return idx
 
 
+def _is_embed_model(model_id: str) -> bool:
+    """Эмбеддинг-модель — не чат-модель: в селекторе она только ломала чат
+    (находка проверки webui: bge-m3:latest рядом с gpt-oss). Сравнение по
+    базе без тега: ollama отдаёт «bge-m3:latest», в .env — «bge-m3»."""
+    return model_id.split(":")[0].lower() == \
+        rag.EMBED_MODEL.split(":")[0].lower()
+
+
 def merge_models(local_ids, online_ids, active_model=None,
                  active_backend="local") -> list:
     """Список моделей обоих бэкендов с дедупом по id. Модель, доступная
@@ -286,12 +295,14 @@ def list_session_ids() -> list:
 
 
 def list_sessions(q: str = "") -> list:
-    """Список чатов: pinned первыми, далее updated_at desc. q (len>=2,
-    иначе игнорируется) фильтрует по title и содержимому сообщений,
-    case-insensitive; отфильтрованным добавляется snippet."""
+    """Список чатов: pinned первыми, далее updated_at desc. q (len>=1,
+    пустой игнорируется) фильтрует по title и содержимому сообщений,
+    case-insensitive; отфильтрованным добавляется snippet. Раньше порог
+    был len>=2 и однобуквенный запрос молча возвращал весь список —
+    выглядело как «поиск сломан» (находка проверки webui)."""
     items = [s for sid in list_session_ids() if (s := session_summary(sid))]
     term = (q or "").strip()
-    if len(term) >= 2:
+    if len(term) >= 1:
         low = term.lower()
         filtered = []
         for s in items:
@@ -322,6 +333,7 @@ def session_detail(session_id: str) -> tuple[int, dict]:
                  "system": meta.get("system"),
                  "temperature": meta.get("temperature"),
                  "max_tokens": meta.get("max_tokens"),
+                 "tokens": int(meta.get("tokens") or 0),
                  "created_at": _as_float(meta.get("created_at")),
                  "updated_at": _as_float(meta.get("updated_at")),
                  "messages": history}
@@ -329,9 +341,12 @@ def session_detail(session_id: str) -> tuple[int, dict]:
 
 def delete_session(session_id: str) -> tuple[int, dict]:
     """DELETE: удаляет <id>.json и <id>.meta.json (каждый — если есть).
-    404, если не было ни одного файла."""
+    404, если не было ни одного файла. Активная генерация сессии сначала
+    останавливается: иначе save_session на конце шага пересоздавал файлы,
+    и удалённый чат «воскресал» в списке (находка проверки webui)."""
     if not SESSION_RE.match(session_id):
         return 400, {"error": "некорректный id сессии"}
+    request_stop(session_id)
     history = context._session_path(session_id)
     meta = agent.meta_path(session_id)
     existed = history.is_file() or meta.is_file()
@@ -374,7 +389,16 @@ def fork_session(session_id: str, message_index: int) -> str | None:
     meta = agent.load_meta(session_id)
     meta.update(pinned=False, created_at=time.time(), updated_at=time.time())
     agent.save_meta(new_id, meta)            # до save_session: иначе автозаголовок
-    agent.save_session(new_id, history[:message_index + 1])
+    copied = history[:message_index + 1]
+    # не оставляем в форке оборванный шаг: история, заканчивающаяся на
+    # assistant с tool_calls (или на tool-результате без продолжения),
+    # путала модель — она циклила повторные поиски до лимита шагов
+    # (находка проверки webui)
+    while copied and (copied[-1].get("role") == "tool"
+                      or (copied[-1].get("role") == "assistant"
+                          and copied[-1].get("tool_calls"))):
+        copied.pop()
+    agent.save_session(new_id, copied)
     return new_id
 
 
@@ -483,7 +507,10 @@ def _prepare_chat(session_id: str, message: str, model_id=None,
         # сам user остаётся — генерация идёт заново от него
         messages = messages[:starts[-1] + 1]
         if message:
-            messages.append({"role": "user", "content": message})
+            # непустой message ЗАМЕНЯЕТ текст последнего user-сообщения —
+            # так UI реализует «изменить и перегенерировать»; старое
+            # поведение (вторым user-сообщением подряд) путало модели
+            messages[-1] = {"role": "user", "content": message}
     else:
         messages.append({"role": "user", "content": message})
     gen = {}
@@ -507,37 +534,77 @@ def _remember_model(session_id: str, model_name: str) -> None:
         agent.save_meta(session_id, meta)
 
 
+def _accumulate_tokens(session_id: str, usage) -> None:
+    """Суммарные токены чата копятся в meta (tokens): счётчик в UI больше
+    не умирает вместе с вкладкой (память вкладки не переживает reload)."""
+    add = (usage or {}).get("prompt_tokens") or 0
+    add += (usage or {}).get("completion_tokens") or 0
+    if not add:
+        return
+    meta = agent.load_meta(session_id)
+    meta["tokens"] = (meta.get("tokens") or 0) + add
+    agent.save_meta(session_id, meta)
+
+
+def _persist_user_message(session_id: str, messages: list) -> None:
+    """Сохраняет историю сразу после подготовки запроса: user-сообщение
+    попадает на диск ДО начала генерации. Иначе Stop/обрыв соединения до
+    конца первого шага терял сообщение навсегда — «история как есть»
+    оказывается пустой (находка проверки webui: Stop -> перезагрузка ->
+    сообщение исчезло). Недописанный assistant по-прежнему не попадает
+    в историю — это семантика run_agent_stream."""
+    agent.save_session(session_id, messages)
+
+
 def chat_once(session_id: str, message: str, model_id=None,
               regenerate: bool = False) -> dict:
     """Не-стрим чат: прежний контракт {answer, log} + новые ключи
     model/fallback_used/usage. log — все строки stdout (on_log=None ->
-    print -> перехват), как и раньше."""
+    print -> перехват), как и раньше. Регистрирует cancel-Event: POST
+    /api/stop работает и для не-стрим запроса (раньше останавливался
+    только стрим)."""
     with session_lock(session_id):
-        messages, client_, model_name, backend, gen, note = _prepare_chat(
-            session_id, message, model_id, regenerate)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            result = agent.run_agent_stream(
-                messages, on_delta=lambda text: None, session_id=session_id,
-                client=client_, model_name=model_name, backend=backend,
-                gen_kwargs=gen, system_note=note)
-        if model_id:
-            _remember_model(session_id, model_name)
+        cancel = threading.Event()
+        with _locks_guard:
+            _cancel_events[session_id] = cancel
+        try:
+            messages, client_, model_name, backend, gen, note = \
+                _prepare_chat(session_id, message, model_id, regenerate)
+            _persist_user_message(session_id, messages)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = agent.run_agent_stream(
+                    messages, on_delta=lambda text: None,
+                    cancel_event=cancel, session_id=session_id,
+                    client=client_, model_name=model_name, backend=backend,
+                    gen_kwargs=gen, system_note=note)
+            if model_id:
+                _remember_model(session_id, model_name)
+            _accumulate_tokens(session_id, result["usage"])
+        finally:
+            pop_cancel(session_id, cancel)
     return {"answer": result["answer"],
             "log": buf.getvalue().splitlines(),
             "model": result["model"],
             "fallback_used": result["fallback_used"],
-            "usage": result["usage"]}
+            "usage": result["usage"],
+            "stopped": result["stopped"]}
+
+
+# тишина SSE, после которой клиенту уходит keepalive-кадр ping (reasoning-
+# фаза gpt-oss молчит десятки секунд и неотличима от зависания)
+PING_TIMEOUT = 15.0
 
 
 def chat_stream_events(session_id: str, message: str, model_id=None,
                        regenerate: bool = False):
     """Генератор SSE-событий чата: yield (event, data) —
-    log/delta/done/error. Генерация идёт в рабочем потоке: колбэки
+    log/delta/done/error/ping. Генерация идёт в рабочем потоке: колбэки
     on_log/on_delta не могут yield-ить из генератора напрямую, события
     идут через очередь. Лок сессии держится всю генерацию (в рабочем
     потоке), cancel-Event регистрируется после захвата лока — registration
-    не затирает флаг ещё идущей генерации той же сессии."""
+    не затирает флаг ещё идущей генерации той же сессии.
+    PING_TIMEOUT — тишина, после которой клиенту уходит keepalive-кадр."""
     q: queue.Queue = queue.Queue()
     # один Event на поколение генерации, создан ДО worker-а: finally гасит
     # именно свой Event по локальной ссылке (ревью P1: «что зарегистрировано
@@ -555,8 +622,9 @@ def chat_stream_events(session_id: str, message: str, model_id=None,
             with _locks_guard:
                 _cancel_events[session_id] = cancel
             try:
-                messages, client_, model_name, backend, gen, note = _prepare_chat(
-                    session_id, message, model_id, regenerate)
+                messages, client_, model_name, backend, gen, note = \
+                    _prepare_chat(session_id, message, model_id, regenerate)
+                _persist_user_message(session_id, messages)
                 result = agent.run_agent_stream(
                     messages,
                     on_log=lambda line: q.put(("log", {"line": line})),
@@ -566,6 +634,7 @@ def chat_stream_events(session_id: str, message: str, model_id=None,
                     gen_kwargs=gen, system_note=note)
                 if model_id:
                     _remember_model(session_id, model_name)
+                _accumulate_tokens(session_id, result["usage"])
                 q.put(("done", {"answer": result["answer"],
                                 "model": result["model"],
                                 "fallback_used": result["fallback_used"],
@@ -588,7 +657,15 @@ def chat_stream_events(session_id: str, message: str, model_id=None,
     worker.start()
     try:
         while True:
-            item = q.get()
+            try:
+                item = q.get(timeout=PING_TIMEOUT)
+            except queue.Empty:
+                # keepalive-кадр: пока генерация молчит (reasoning-фаза
+                # gpt-oss тянется минутами), клиент видит трафик и знает,
+                # что соединение живо, а не оборвалось (находка проверки:
+                # тишина неотличима от зависания)
+                yield ("ping", {"t": time.time()})
+                continue
             if item is None:
                 return
             yield item
@@ -663,8 +740,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 _ensure_backend()
                 with models_lock:
-                    local_ids = agent.local_model_ids()
-                    online_ids = agent.online_model_ids()
+                    local_ids = [m for m in agent.local_model_ids()
+                                 if not _is_embed_model(m)]
+                    online_ids = [m for m in agent.online_model_ids()
+                                  if not _is_embed_model(m)]
                 active_backend = "local" if agent.active is agent.LOCAL \
                     else "online"
                 self._json(200, {

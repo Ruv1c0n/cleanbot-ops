@@ -312,10 +312,13 @@ def test_list_sessions_q_filter_and_snippet(sessions_ws):
     # совпадение только в title: snippet остаётся null
     title_hit = next(i for i in items if i["id"] == "q2")
     assert title_hit["snippet"] is None
-    # q короче 2 — игнорируется: весь список, без snippet
-    all_items = webui.list_sessions(q="я")
-    assert {i["id"] for i in all_items} == {"q1", "q2", "q3"}
-    assert "snippet" not in all_items[0]
+    # q из одного символа теперь тоже фильтрует (раньше порог len>=2
+    # молча возвращал весь список — выглядело как сломанный поиск)
+    one = webui.list_sessions(q="я")
+    assert {i["id"] for i in one} == {"q1", "q2"}
+    assert next(i for i in one if i["id"] == "q2")["snippet"] is None
+    # запрос без совпадений — пустой список
+    assert webui.list_sessions(q="ыыы") == []
     assert "snippet" not in webui.list_sessions()[0]
 
 
@@ -527,3 +530,139 @@ def test_prepare_chat_custom_system_returns_note(sessions_ws, monkeypatch):
     make_session("plain", [user_msg("вопрос")])
     _, _, _, _, _, note = webui._prepare_chat("plain", "привет")
     assert note is None
+
+
+# ---------- проверки 2026-11-15 (полная проверка webui) ----------
+
+def test_stream_persists_user_message_before_generation(sessions_ws, monkeypatch):
+    # P1: Stop/обрыв до конца первого шага терял сообщение пользователя —
+    # теперь user-сообщение на диске ДО запуска run_agent_stream
+    monkeypatch.setattr(webui, "_ensure_backend", lambda: None)
+    monkeypatch.setattr(webui.agent, "active", {"model": "fake", "base_url": "x"})
+    monkeypatch.setattr(webui.agent, "client", object())
+    make_session("pum", [])
+
+    def fake_run(messages, **kwargs):
+        # на момент запуска генерации user-сообщение уже должно лежать на диске
+        on_disk = webui._read_history("pum")
+        seen["disk"] = on_disk
+        return {"answer": "ок", "model": "m", "fallback_used": False,
+                "usage": {}, "stopped": True}
+
+    seen = {}
+    monkeypatch.setattr(webui.agent, "run_agent_stream", fake_run)
+    events = list(webui.chat_stream_events("pum", "важное сообщение"))
+    assert [n for n, _ in events] == ["done"]
+    assert seen["disk"] == [user_msg("важное сообщение")]
+    # meta обновлена (updated_at/автозаголовок) — чат виден в списке сразу
+    assert webui.agent.load_meta("pum")["title"] == "важное сообщение"
+
+
+def test_chat_once_registers_cancel_and_stop_works(sessions_ws, monkeypatch):
+    # не-стрим чат теперь останавливается через /api/stop: chat_once
+    # регистрирует cancel-Event (раньше {"ok": false} при активной генерации)
+    import threading
+    monkeypatch.setattr(webui, "_ensure_backend", lambda: None)
+    monkeypatch.setattr(webui.agent, "active", {"model": "fake", "base_url": "x"})
+    monkeypatch.setattr(webui.agent, "client", object())
+    make_session("once", [])
+    result = {}
+
+    def fake_run(messages, cancel_event=None, **kwargs):
+        result["registered"] = cancel_event is not None             and webui.request_stop("once")
+        return {"answer": "прервано", "model": "m", "fallback_used": False,
+                "usage": {}, "stopped": True}
+
+    monkeypatch.setattr(webui.agent, "run_agent_stream", fake_run)
+    res = webui.chat_once("once", "вопрос")
+    assert result["registered"] is True
+    assert res["stopped"] is True
+    with webui._locks_guard:
+        assert "once" not in webui._cancel_events
+
+
+def test_delete_session_stops_running_generation(sessions_ws):
+    # DELETE во время генерации гасит её: иначе save_session на конце шага
+    # пересоздавал файлы, и удалённый чат воскресал в списке
+    webui.register_cancel("dz")
+    code, body = webui.delete_session("dz")
+    with webui._locks_guard:
+        ev = webui._cancel_events.get("dz")
+    assert code == 404 and ev is not None and ev.is_set()
+
+
+def test_fork_session_trims_dangling_tool_step(sessions_ws):
+    # fork на границе шага: история, оканчивающаяся на assistant с
+    # tool_calls, вгоняла модель в цикл повторных поисков до лимита шагов
+    history = [user_msg("вопрос"),
+               {"role": "assistant", "content": "",
+                "tool_calls": [{"id": "c1", "type": "function",
+                                "function": {"name": "list_files",
+                                             "arguments": "{}"}}]},
+               {"role": "tool", "tool_call_id": "c1", "content": "файлы"},
+               {"role": "assistant", "content": "ответ"}]
+    make_session("orig", history)
+    # форк по tool-сообщению (idx=2): оборванный шаг обрезается целиком
+    new_id = webui.fork_session("orig", 2)
+    assert webui._read_history(new_id) == [user_msg("вопрос")]
+    # форк по assistant с tool_calls (idx=1) — то же самое
+    new_id = webui.fork_session("orig", 1)
+    assert webui._read_history(new_id) == [user_msg("вопрос")]
+    # форк по полному шагу не режется
+    new_id = webui.fork_session("orig", 3)
+    assert webui._read_history(new_id) == history
+
+
+def test_models_filter_hides_embed_model():
+    assert webui._is_embed_model("bge-m3:latest") is True
+    assert webui._is_embed_model("bge-m3") is True
+    assert webui._is_embed_model("gpt-oss:latest") is False
+    assert webui._is_embed_model("qwen38-turbo:latest") is False
+
+
+def test_session_detail_includes_tokens(sessions_ws):
+    make_session("tk", [user_msg("привет")])
+    webui._accumulate_tokens("tk", {"prompt_tokens": 100, "completion_tokens": 30})
+    webui._accumulate_tokens("tk", {"prompt_tokens": None, "completion_tokens": 20})
+    code, d = webui.session_detail("tk")
+    assert code == 200 and d["tokens"] == 150
+    # нулевой usage не пишет meta зря
+    webui._accumulate_tokens("tk", {})
+    assert webui.agent.load_meta("tk")["tokens"] == 150
+
+
+def test_prepare_chat_regenerate_with_message_replaces_last_user(sessions_ws,
+                                                                 monkeypatch):
+    # «изменить и перегенерировать»: regenerate + непустой message заменяет
+    # текст последнего user-сообщения, а не добавляет второй user подряд
+    monkeypatch.setattr(webui, "_ensure_backend", lambda: None)
+    monkeypatch.setattr(webui.agent, "active", {"model": "fake", "base_url": "x"})
+    monkeypatch.setattr(webui.agent, "client", object())
+    make_session("edt", [user_msg("старый текст"), assistant_msg("ответ")])
+    messages, _, _, _, _, note = webui._prepare_chat(
+        "edt", "новый текст", regenerate=True)
+    assert messages[-1] == user_msg("новый текст")
+    assert [m["role"] for m in messages] == ["system", "user"]
+
+
+def test_chat_stream_events_pings_on_silence(sessions_ws, monkeypatch):
+    # keepalive: пока генерация молчит (reasoning gpt-oss), клиент получает
+    # ping-кадры и не путает тишину с зависанием
+    monkeypatch.setattr(webui, "_ensure_backend", lambda: None)
+    monkeypatch.setattr(webui, "PING_TIMEOUT", 0.2)
+    monkeypatch.setattr(webui.agent, "active", {"model": "fake", "base_url": "x"})
+    monkeypatch.setattr(webui.agent, "client", object())
+    make_session("png", [])
+
+    import time as _time
+
+    def slow_run(messages, **kwargs):
+        _time.sleep(0.7)                     # две тишины > PING_TIMEOUT
+        return {"answer": "ок", "model": "m", "fallback_used": False,
+                "usage": {}, "stopped": False}
+
+    monkeypatch.setattr(webui.agent, "run_agent_stream", slow_run)
+    events = list(webui.chat_stream_events("png", "вопрос"))
+    names = [n for n, _ in events]
+    assert names[-1] == "done"
+    assert names.count("ping") >= 2

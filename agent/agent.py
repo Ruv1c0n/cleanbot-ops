@@ -32,14 +32,30 @@ def make_client(cfg):
                   max_retries=0, timeout=120)
 
 
+# TTL-кэш списков моделей: resolve_model опрашивает оба бэкенда на КАЖДОЕ
+# сообщение с model — два сетевых вызова добавляли секунды латентности.
+# Ключ — base_url; тесты подменяют саму функцию, кэш их не задевает.
+_MODEL_IDS_TTL = 30.0
+_model_ids_cache: dict = {}
+
+
 def _backend_model_ids(cfg, timeout=3) -> list:
     """Список id моделей бэкенда. Недоступен/ошибка -> []: вызывается из
     веб-эндпоинтов, где отсутствие списка не должно ронять обработчик."""
+    key = cfg.get("base_url")
+    now = time.time()
+    ts, cached = _model_ids_cache.get(key, (0.0, None))
+    if cached is not None and now - ts < _MODEL_IDS_TTL:
+        return cached
     try:
-        return [m.id for m in make_client(cfg).with_options(
+        ids = [m.id for m in make_client(cfg).with_options(
             timeout=timeout).models.list().data]
     except Exception:
+        # негативный результат не кэшируем: поднятый бэкенд должен
+        # подхватиться на следующем же запросе
         return []
+    _model_ids_cache[key] = (now, ids)
+    return ids
 
 
 def local_model_ids() -> list:
@@ -199,7 +215,8 @@ def save_session(session_id: str, messages: list) -> None:
 # сообщений) и должен остаться совместимым со старыми сессиями.
 META_DEFAULTS = {"title": None, "model": None, "pinned": False,
                  "created_at": 0.0, "updated_at": 0.0,
-                 "system": None, "temperature": None, "max_tokens": None}
+                 "system": None, "temperature": None, "max_tokens": None,
+                 "tokens": 0}
 
 
 def meta_path(session_id: str):
@@ -559,7 +576,12 @@ def run_agent(messages: list) -> str:
                 {"role": "tool", "tool_call_id": call.id, "content": result})
         save_session(SESSION_ID, messages)                   # шаг агента завершён — сохраняем
 
-    return "Достигнут лимит шагов, задача не завершена."
+    # лимит шагов: заглушка сохраняется в историю — иначе UI показывает её,
+    # а после перезагрузки страницы она исчезала (находка проверки webui)
+    answer = "Достигнут лимит шагов, задача не завершена."
+    messages.append({"role": "assistant", "content": answer})
+    save_session(SESSION_ID, messages)
+    return answer
 
 
 # ---------- стриминговый агентный цикл (webui-pro) ----------
@@ -636,7 +658,7 @@ def run_agent_stream(messages: list, *, on_delta, on_log=None,
             stopped = True
             break
         req = ensure_context_budget(list(messages), CONTEXT_BUDGET, STRATEGY,
-                                    TOOLS, summarize_fn=summarize)
+                                    TOOLS, summarize_fn=summarize, log=log)
         if system_note:
             # reminder в последнем user-сообщении копии: замена словаря в
             # списке запроса не задевает сохранённую историю
@@ -659,28 +681,38 @@ def run_agent_stream(messages: list, *, on_delta, on_log=None,
 
         parts, acc, finish, resp_model = [], {}, None, mn
         step_usage: dict = {}
-        for chunk in response:
-            if cancel_event is not None and cancel_event.is_set():
-                stopped = True
-                break
-            if getattr(chunk, "model", None):
-                resp_model = chunk.model
-            _add_usage(step_usage, getattr(chunk, "usage", None))
-            choices = getattr(chunk, "choices", None) or ()
-            if not choices:
-                continue            # финальный чанк с usage без choices
-            choice = choices[0]
-            finish = getattr(choice, "finish_reason", None) or finish
-            delta = getattr(choice, "delta", None)
-            if delta is None:
-                continue
-            text = getattr(delta, "content", None)
-            if text:
-                parts.append(text)
-                streamed.append(text)
-                on_delta(text)
-            if getattr(delta, "tool_calls", None):
-                accumulate_tool_call_delta(acc, delta.tool_calls)
+        try:
+            for chunk in response:
+                if cancel_event is not None and cancel_event.is_set():
+                    stopped = True
+                    break
+                if getattr(chunk, "model", None):
+                    resp_model = chunk.model
+                _add_usage(step_usage, getattr(chunk, "usage", None))
+                choices = getattr(chunk, "choices", None) or ()
+                if not choices:
+                    continue            # финальный чанк с usage без choices
+                choice = choices[0]
+                finish = getattr(choice, "finish_reason", None) or finish
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                text = getattr(delta, "content", None)
+                if text:
+                    parts.append(text)
+                    streamed.append(text)
+                    on_delta(text)
+                if getattr(delta, "tool_calls", None):
+                    accumulate_tool_call_delta(acc, delta.tool_calls)
+        finally:
+            # закрываем upstream-стрим ЯВНО, в том числе при cancel/отключении
+            # клиента: брошенный без close() HTTP-поток оставляет Ollama
+            # генерировать ответ до конца — зомби-слоты клинили очередь
+            # (находка проверки webui: после серии обрывов стримов Ollama
+            # была недоступна минутами)
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
 
         for key in ("prompt_tokens", "completion_tokens"):
             if step_usage.get(key):
@@ -725,9 +757,13 @@ def run_agent_stream(messages: list, *, on_delta, on_log=None,
         return {"answer": "".join(streamed), "model": mn,
                 "fallback_used": fallback_used, "usage": usage,
                 "stopped": True}
-    return {"answer": "Достигнут лимит шагов, задача не завершена.",
-            "model": mn, "fallback_used": fallback_used, "usage": usage,
-            "stopped": False}
+    # лимит шагов: заглушка сохраняется в историю — иначе UI показывает её,
+    # а после перезагрузки страницы она исчезала (находка проверки webui)
+    answer = "Достигнут лимит шагов, задача не завершена."
+    messages.append({"role": "assistant", "content": answer})
+    save_session(session_id, messages)
+    return {"answer": answer, "model": mn, "fallback_used": fallback_used,
+            "usage": usage, "stopped": False}
 
 
 if __name__ == "__main__":

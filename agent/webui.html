@@ -190,6 +190,71 @@
   .chip select option, .chip select optgroup { background: var(--surface); color: var(--ink); }
   .chip.title-chip { max-width: 260px; cursor: default; }
 
+  /* ---------- селектор моделей: инпут + фильтруемое меню ---------- */
+  #model-input {
+    font-family: var(--mono); font-size: 11px; color: var(--ink);
+    background: transparent; border: 0; outline: none; max-width: 250px;
+    cursor: pointer; text-overflow: ellipsis;
+  }
+  #model-input:disabled { color: var(--dim); cursor: default; }
+  #model-input:focus-visible { outline: 1px solid var(--brass); outline-offset: 2px; }
+  .model-menu {
+    position: absolute; top: calc(100% + 8px); right: 0; z-index: 50;
+    width: 340px; max-height: 380px; display: flex; flex-direction: column;
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    border: 1px solid var(--line-2); border-radius: 14px;
+    box-shadow: var(--rim), 0 0 0 1px var(--rim-outer), var(--shadow-2);
+    overflow: hidden;
+  }
+  .model-menu input {
+    margin: 10px 12px 8px; font-family: var(--mono); font-size: 11.5px;
+    color: var(--ink); background: var(--well); border: 1px solid var(--line);
+    border-radius: 99px; padding: 7px 13px; outline: none;
+  }
+  .model-menu input:focus { border-color: var(--brass-line); }
+  #model-list { overflow-y: auto; padding: 2px 6px 10px; }
+  .mm-group {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--faint); padding: 8px 10px 4px;
+  }
+  .mm-opt {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink);
+    padding: 6px 10px; border-radius: 8px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .mm-opt:hover, .mm-opt.sel { background: var(--glass-2); color: var(--brass-hi); }
+
+  /* ---------- служебные элементы: баннер генерации, к низу, тост ---------- */
+  #gen-banner {
+    position: relative; z-index: 2; margin: 0 auto 8px;
+    max-width: 860px; width: calc(100% - 52px);
+    display: flex; align-items: center; gap: 10px; justify-content: center;
+    font-family: var(--sans); font-size: 12px; color: var(--amber);
+    background: var(--amber-soft); border: 1px solid var(--brass-line);
+    border-radius: 12px; padding: 7px 12px;
+  }
+  #gen-banner .ib { padding: 3px 10px; font-size: 11px; }
+  #jump-down {
+    position: absolute; right: 22px; bottom: 108px; z-index: 3;
+    border-radius: 99px; padding: 8px 13px;
+  }
+  #toast {
+    position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+    z-index: 70; background: var(--surface-2); border: 1px solid var(--line-2);
+    border-radius: 12px; padding: 9px 16px; font-size: 12.5px;
+    color: var(--ink); box-shadow: var(--shadow-2); animation: fade .2s;
+    max-width: min(520px, calc(100vw - 40px)); text-align: center;
+  }
+  .typing .typing-time {
+    font-family: var(--mono); font-size: 11px; color: var(--dim);
+    margin-left: 10px; align-self: center; font-variant-numeric: tabular-nums;
+  }
+  .unread-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--brass); margin-left: 7px; flex: none;
+    box-shadow: 0 0 3px rgba(211, 162, 94, .55);
+  }
+
   .badge {
     display: inline-flex; align-items: center; gap: 6px; flex: none;
     font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
@@ -702,7 +767,11 @@
   </div>
   <div class="chip model" id="model-chip" data-state="off">
     <i class="dot"></i>
-    <select id="model-select" disabled aria-label="модель агента"></select>
+    <input id="model-input" disabled aria-label="модель агента" autocomplete="off" spellcheck="false" readonly>
+    <div class="model-menu" id="model-menu" hidden>
+      <input id="model-filter" type="search" placeholder="фильтр моделей…" aria-label="фильтр моделей" spellcheck="false">
+      <div id="model-list" role="listbox" aria-label="доступные модели"></div>
+    </div>
   </div>
   <span class="chip title-chip" id="chat-title" hidden></span>
   <span class="badge persona" id="persona-badge" hidden>custom persona</span>
@@ -742,13 +811,20 @@
       </div>
       <div class="feed" id="feed"></div>
     </main>
+    <div id="gen-banner" hidden>
+      <span>идёт генерация в «<span id="gen-banner-title"></span>»</span>
+      <button id="gen-banner-stop" class="ib danger">⏹ остановить</button>
+    </div>
     <div class="hint-line">enter — отправить · ctrl+n — новый чат · ctrl+k — поиск · esc — стоп генерации</div>
+    <button id="jump-down" class="ib" hidden aria-label="прокрутить к последним сообщениям">↓</button>
     <div class="composer">
       <textarea id="input" rows="1" placeholder="Спросите агента о проекте…" aria-label="сообщение"></textarea>
       <button id="send" aria-label="отправить">↑</button>
     </div>
   </div>
 </div>
+
+<div id="toast" hidden></div>
 
 <div class="modal-backdrop" id="modal-backdrop" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -781,9 +857,14 @@
         sidebar = $("sidebar"), overlay = $("overlay"), burger = $("burger"),
         chatList = $("chat-list"), searchInput = $("chat-search"),
         newChatBtn = $("new-chat"), exportBtn = $("export"), settingsBtn = $("chat-settings"),
-        modelChip = $("model-chip"), modelSel = $("model-select"),
+        modelChip = $("model-chip"), modelInput = $("model-input"),
+        modelMenu = $("model-menu"), modelFilter = $("model-filter"),
+        modelList = $("model-list"),
         chatTitleEl = $("chat-title"), personaBadge = $("persona-badge"),
         tokenCounter = $("token-counter"),
+        genBanner = $("gen-banner"), genBannerTitle = $("gen-banner-title"),
+        genBannerStop = $("gen-banner-stop"), jumpDown = $("jump-down"),
+        toastEl = $("toast"),
         modalBackdrop = $("modal-backdrop"), setSystem = $("set-system"),
         setTemp = $("set-temp"), setMaxtok = $("set-maxtok"),
         setErr = $("set-err"), setSave = $("set-save"), setCancel = $("set-cancel");
@@ -797,16 +878,29 @@
     query: "",              // текущий поисковый запрос
     generating: false,
     pendingModel: null,     // выбранная модель, когда чат ещё не создан
+    editing: false,         // правка последнего user-сообщения
   };
-  // токены и «кто реально ответил» живут в памяти вкладки: контракт не отдаёт
-  // usage в истории, поэтому копить можно только из done-событий текущей сессии браузера
-  const tokensByChat = new Map();     // chatId -> суммарные токены
+  // токены и «кто реально ответил»: суммарные токены чата живут в meta на
+  // сервере (переживают reload), tokensByChat хранит дельту текущей вкладки
+  // с момента открытия чата
+  const tokensByChat = new Map();     // chatId -> дельта токенов с открытия
   const answerMetaByChat = new Map(); // chatId -> {model, fallback, stopped} последнего ответа
+  const unreadChats = new Set();      // чаты, где генерация завершилась «за кадром»
   const rawTexts = new WeakMap();     // элемент бабла -> исходный markdown (для «копировать»)
 
   // ---------- утилиты ----------
   const esc = s => String(s).replace(/[&<>"]/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  // ненавязчивое уведомление вместо тихих no-op (экспорт пустого чата,
+  // Ctrl+N во время генерации и т.п.)
+  let toastTimer = null;
+  function toast(text) {
+    toastEl.textContent = text;
+    toastEl.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toastEl.hidden = true; }, 2600);
+  }
 
   async function api(path, opts = {}) {
     const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
@@ -859,9 +953,14 @@
   let stick = true;
   main.addEventListener("scroll", () => {
     stick = main.scrollHeight - main.scrollTop - main.clientHeight < 80;
+    updateJumpDown();
   }, { passive: true });
   function scrollIfStick(force) {
     if (stick || force) main.scrollTop = main.scrollHeight;
+  }
+  function updateJumpDown() {
+    // кнопка возврата вниз: пользователь отлистал вверх во время ленты
+    jumpDown.hidden = stick || !feed.children.length || !intro.hidden;
   }
 
   // ---------- markdown-рендерер (свой мини, без библиотек) ----------
@@ -948,8 +1047,17 @@
     if (!state.sessions.length) {
       const d = document.createElement("div");
       d.className = "sb-empty";
-      d.textContent = state.query.length >= 2 ? "ничего не найдено" : "чатов пока нет";
+      d.textContent = state.query.length >= 1 ? "ничего не найдено" : "чатов пока нет";
       chatList.appendChild(d);
+      // пустое состояние с действием, а не тупиком
+      if (state.query.length < 1) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "ghost-btn";
+        b.textContent = "+ новый чат";
+        b.onclick = newChat;
+        d.appendChild(document.createElement("br"));
+        d.appendChild(b);
+      }
       return;
     }
     for (const s of state.sessions) {
@@ -967,6 +1075,13 @@
         title.appendChild(pin);
       }
       title.appendChild(document.createTextNode(s.title || s.id));
+      // генерация завершилась, пока чат был неактивен — маркер нового ответа
+      if (unreadChats.has(s.id)) {
+        const dot = document.createElement("span");
+        dot.className = "unread-dot";
+        dot.setAttribute("aria-label", "есть новый ответ");
+        title.appendChild(dot);
+      }
 
       const sub = document.createElement("div");
       sub.className = "ci-sub";
@@ -1063,7 +1178,7 @@
   }
 
   async function newChat() {
-    if (state.generating) return;
+    if (state.generating) { toast("дождитесь завершения генерации"); return; }
     try {
       const s = await api("/api/sessions", { method: "POST", body: "{}" });
       await loadSessions();
@@ -1084,11 +1199,16 @@
     state.activeMeta = d;
     state.history = d.messages || [];
     localStorage.setItem("cb_active", id);
+    unreadChats.delete(id);              // маркер «есть новый ответ» отработал
+    renderChatList();                    // точка уходит из сайдбара сразу
+    tokensByChat.set(id, 0);             // дельта вкладки обнуляется: база теперь в meta
+    state.editing = false;
     feed.innerHTML = "";
     renderHistory();
     refreshHeader();
     setModelSelect(d.model);
     updateIntro();
+    updateGenBanner();
     closeSidebar();
     scrollIfStick(true);
   }
@@ -1110,9 +1230,28 @@
   }
 
   function renderTokens() {
-    const n = state.activeId ? (tokensByChat.get(state.activeId) || 0) : 0;
+    // база — серверная meta.tokens (переживает reload), дельта — вкладка
+    const n = state.activeId
+        ? ((state.activeMeta && state.activeMeta.tokens) || 0)
+          + (tokensByChat.get(state.activeId) || 0)
+        : 0;
     tokenCounter.hidden = !n;
     if (n) tokenCounter.textContent = fmtNum(n) + " ток";
+  }
+
+  // баннер «генерация идёт в другом чате»: уход из генерирующего чата
+  // не должен оставлять кнопку ⏹ без объяснения, ЧТО она остановит
+  function chatTitleFor(id) {
+    if (state.activeId === id && state.activeMeta)
+      return state.activeMeta.title || id;
+    const s = state.sessions.find(x => x.id === id);
+    return (s && s.title) || id;
+  }
+  function updateGenBanner() {
+    const active = state.generating && state.generatingChatId
+        && state.generatingChatId !== state.activeId;
+    genBanner.hidden = !active;
+    if (active) genBannerTitle.textContent = chatTitleFor(state.generatingChatId);
   }
 
   function updateIntro() {
@@ -1144,8 +1283,11 @@
   function renderHistory() {
     const openChips = []; // незакрытые tool_call-чипы в порядке появления
     let lastBot = null;
+    // редактировать можно только ПОСЛЕДНЕЕ user-сообщение: правка старых
+    // потребовала бы обрезки середины истории (сервер не поддерживает)
+    const lastUserIdx = state.history.map(m => m.role).lastIndexOf("user");
     state.history.forEach((m, i) => {
-      if (m.role === "user") { userBubble(m.content, i); return; }
+      if (m.role === "user") { userBubble(m.content, i, i === lastUserIdx); return; }
       if (m.role === "assistant") {
         let wrap = null;
         for (const tc of m.tool_calls || []) {
@@ -1186,7 +1328,7 @@
     return el;
   }
 
-  function userBubble(text, index) {
+  function userBubble(text, index, canEdit) {
     const el = document.createElement("div");
     el.className = "msg user";
     el.dataset.index = index;
@@ -1194,12 +1336,17 @@
     el.querySelector(".bubble").textContent = text;
     const acts = document.createElement("div");
     acts.className = "msg-actions";
-    const fork = document.createElement("button");
-    fork.type = "button"; fork.className = "ib"; fork.dataset.act = "fork";
-    fork.textContent = "⑂ форкнуть";
-    fork.title = "создать копию чата до этого сообщения";
-    fork.setAttribute("aria-label", "форкнуть чат отсюда");
-    acts.appendChild(fork);
+    const mkBtn = (act, label, glyph) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "ib"; b.dataset.act = act;
+      b.textContent = glyph;
+      b.title = label; b.setAttribute("aria-label", label);
+      return b;
+    };
+    acts.appendChild(mkBtn("fork", "создать копию чата до этого сообщения", "⑂ форкнуть"));
+    if (canEdit) {
+      acts.appendChild(mkBtn("edit", "изменить сообщение и перегенерировать ответ", "✎ изменить"));
+    }
     el.appendChild(acts);
     feed.appendChild(el);
     return el;
@@ -1269,8 +1416,24 @@
       const msgEl = btn.closest(".msg");
       const idx = Number(msgEl?.dataset.index);
       await forkFrom(idx);
+    } else if (act === "edit") {
+      startEdit(btn.closest(".msg"));
     }
   });
+
+  // правка последнего user-сообщения: текст уходит в композер, отправка
+  // перегенерирует ответ с заменой сообщения (сервер: regenerate+message)
+  function startEdit(msgEl) {
+    if (state.generating || !state.activeId || !msgEl) return;
+    const idx = Number(msgEl.dataset.index);
+    const text = state.history[idx]?.content;
+    if (typeof text !== "string") return;
+    input.value = text;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    state.editing = true;
+    input.focus();
+    toast("правка: измените текст и нажмите Enter — ответ перегенерируется");
+  }
 
   async function forkFrom(index) {
     if (!state.activeId || state.generating || !Number.isInteger(index) || index < 0) return;
@@ -1282,57 +1445,119 @@
     } catch (e) { bubbleErr("⚠ не удалось форкнуть: " + e.message); }
   }
 
-  // ---------- селектор модели ----------
+  // ---------- селектор моделей: инпут + фильтруемое меню ----------
+  // заменяет нативный select: ~430 онлайн-моделей без поиска были unusable
+  let modelsCache = [];
+
   async function loadModels() {
     try {
       const d = await api("/api/models");
+      modelsCache = d.models || [];
       modelChip.dataset.state = "on";
-      modelSel.disabled = false;
-      modelSel.innerHTML = "";
-      const groups = { local: "локальные", online: "онлайн" };
-      for (const be of ["local", "online"]) {
-        const list = (d.models || []).filter(m => m.backend === be);
-        if (!list.length) continue;
-        const og = document.createElement("optgroup");
-        og.label = groups[be];
-        for (const m of list) og.appendChild(new Option(m.id, m.id));
-        modelSel.appendChild(og);
-      }
-      if (!modelSel.options.length) {
-        modelSel.appendChild(new Option(d.active || "нет моделей", d.active || ""));
+      modelInput.disabled = false;
+      modelInput.readOnly = false;
+      if (!modelsCache.length) {
+        modelInput.value = d.active || "нет моделей";
+        modelInput.readOnly = true;
       }
       if (!state.pendingModel) state.pendingModel = d.active || null;
+      setModelSelect(state.pendingModel);
     } catch {
       modelChip.dataset.state = "off";
-      modelSel.disabled = true;
-      modelSel.innerHTML = "";
-      modelSel.appendChild(new Option("сервер недоступен", ""));
+      modelInput.disabled = true;
+      modelInput.value = "сервер недоступен";
     }
   }
 
   function setModelSelect(model) {
-    // модель чата может отсутствовать в списке (например, локальная при упавшем бэкенде) —
-    // ищем перебором: значение id может ломать CSS-селектор
-    const has = model && [...modelSel.options].some(o => o.value === model);
-    if (model && !has) modelSel.appendChild(new Option(model, model));
-    const fallbackModel = state.pendingModel || "";
-    modelSel.value = model || fallbackModel;
-    if (modelSel.value === "" && modelSel.options.length && modelSel.options[0].value) {
-      modelSel.selectedIndex = 0;
+    // модель чата может отсутствовать в списке (например, локальная при
+    // упавшем бэкенде) — показываем её как есть, фильтр меню её найдёт
+    modelInput.value = model || state.pendingModel || "";
+  }
+
+  function closeModelMenu() { modelMenu.hidden = true; }
+
+  function renderModelMenu(q) {
+    modelList.innerHTML = "";
+    const term = (q || "").trim().toLowerCase();
+    const groups = { local: "локальные", online: "онлайн" };
+    let shown = 0;
+    for (const be of ["local", "online"]) {
+      const list = modelsCache.filter(m => m.backend === be
+          && (!term || m.id.toLowerCase().includes(term)));
+      if (!list.length) continue;
+      const head = document.createElement("div");
+      head.className = "mm-group";
+      head.textContent = groups[be];
+      modelList.appendChild(head);
+      const cap = 200;                        // рендерим порциями: DOM на 430 нод тормозит
+      for (const m of list.slice(0, cap)) {
+        const opt = document.createElement("div");
+        opt.className = "mm-opt" + (m.id === modelInput.value ? " sel" : "");
+        opt.setAttribute("role", "option");
+        opt.textContent = m.id;
+        opt.onclick = () => selectModel(m.id);
+        modelList.appendChild(opt);
+        shown++;
+      }
+      if (list.length > cap) {
+        const more = document.createElement("div");
+        more.className = "mm-group";
+        more.textContent = "… уточните фильтр (" + (list.length - cap) + " скрыто)";
+        modelList.appendChild(more);
+      }
+    }
+    if (!shown) {
+      const d = document.createElement("div");
+      d.className = "mm-group";
+      d.textContent = "ничего не найдено";
+      modelList.appendChild(d);
     }
   }
 
-  modelSel.onchange = () => {
-    state.pendingModel = modelSel.value || null;
+  function openModelMenu() {
+    if (modelInput.disabled) return;
+    modelMenu.hidden = false;
+    modelFilter.value = "";
+    renderModelMenu("");
+    modelFilter.focus();
+  }
+
+  function selectModel(id) {
+    modelInput.value = id;
+    closeModelMenu();
+    state.pendingModel = id || null;
     if (state.activeId) {
-      patchChat(state.activeId, { model: modelSel.value || null });
+      patchChat(state.activeId, { model: id || null });
     }
     // без активного чата выбор ляжет в meta при первом сообщении (модель уходит в /api/chat)
-  };
+  }
+
+  modelInput.addEventListener("click", e => {
+    e.stopPropagation();
+    if (modelMenu.hidden) openModelMenu();
+    else closeModelMenu();
+  });
+  modelInput.addEventListener("focus", () => {
+    if (modelMenu.hidden) openModelMenu();
+  });
+  modelFilter.addEventListener("input", () => renderModelMenu(modelFilter.value));
+  modelMenu.addEventListener("click", e => e.stopPropagation());
+  modelInput.addEventListener("click", e => e.stopPropagation());
+  // клик мимо меню закрывает его
+  document.addEventListener("click", closeModelMenu);
+  modelFilter.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const first = modelList.querySelector(".mm-opt");
+      if (first) first.click();
+    }
+  });
 
   // ---------- экспорт чата в markdown ----------
   function exportChat() {
-    if (!state.activeId || !state.history.length) return;
+    if (!state.activeId) return;
+    if (!state.history.length) { toast("экспортировать нечего — чат пуст"); return; }
     const title = (state.activeMeta && state.activeMeta.title) || state.activeId;
     const lines = ["# " + title, ""];
     for (const m of state.history) {
@@ -1359,7 +1584,8 @@
 
   // ---------- настройки чата (модал) ----------
   function openSettings() {
-    if (!state.activeId || state.generating) return;
+    if (!state.activeId) return;
+    if (state.generating) { toast("настройки доступны после завершения генерации"); return; }
     const m = state.activeMeta || {};
     setSystem.value = m.system || "";
     setTemp.value = m.temperature ?? "";
@@ -1406,23 +1632,37 @@
   modalBackdrop.onclick = e => { if (e.target === modalBackdrop) closeSettings(); };
 
   // ---------- стрим: отправка, SSE-парсер, стоп ----------
+  let typingTimer = null;   // счётчик секунд ожидания в typing-чипе
+
   function busy(on) {
     state.generating = on;
     send.textContent = on ? "⏹" : "↑";
     send.classList.toggle("stopping", on);
     send.setAttribute("aria-label", on ? "остановить генерацию" : "отправить");
     main.classList.toggle("no-smooth", on);
+    clearInterval(typingTimer);
+    typingTimer = null;
     if (on) {
       const t = document.createElement("div");
       t.className = "typing"; t.id = "typing";
-      t.innerHTML = "<i></i><i></i><i></i>";
+      t.innerHTML = "<i></i><i></i><i></i><span class=\"typing-time\"></span>";
       feed.appendChild(t);
+      // счётчик ожидания: reasoning-фаза gpt-oss молчит десятки секунд и
+      // неотличима от зависания (находка проверки webui)
+      const t0 = Date.now();
+      const tick = () => {
+        const el = document.querySelector("#typing .typing-time");
+        if (el) el.textContent = Math.floor((Date.now() - t0) / 1000) + " с";
+      };
+      tick();
+      typingTimer = setInterval(tick, 1000);
       updateIntro();
       scrollIfStick();
     } else {
       document.getElementById("typing")?.remove();
       updateIntro();
     }
+    updateGenBanner();
   }
 
   async function stopGen() {
@@ -1437,13 +1677,13 @@
   send.onclick = () => {
     if (state.generating) { stopGen(); return; }
     const t = input.value.trim();
-    if (t) generate({ message: t });
+    if (t) generate({ message: t, edit: state.editing });
   };
   input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       // во время генерации Enter не должен случайно «надавить» на стоп
-      if (!state.generating) { const t = input.value.trim(); if (t) generate({ message: t }); }
+      if (!state.generating) { const t = input.value.trim(); if (t) generate({ message: t, edit: state.editing }); }
     }
   });
   input.addEventListener("input", () => {
@@ -1452,8 +1692,10 @@
   });
 
   function chipFromEcho(line) {
-    // строки эха вида «🔧 name(args) -> результат»
-    const m = line.match(/^🔧\s*(\w+)\((.*)\)\s*->\s*([\s\S]*)$/);
+    // строки эха вида «🔧 name(args) -> результат»; незадачливая часть —
+    // жадный (.*) проглатывал «) -> » из результата: берём ПЕРВОЕ вхождение
+    // (args — JSON, куда ") -> " попадает несравнимо реже, чем в тексты доков)
+    const m = line.match(/^🔧\s*(\w+)\((.*?)\)\s*->\s*([\s\S]*)$/);
     const d = document.createElement("details");
     d.className = "tool";
     if (m) {
@@ -1466,9 +1708,10 @@
     return d;
   }
 
-  async function generate({ message = null, regenerate = false } = {}) {
+  async function generate({ message = null, regenerate = false, edit = false } = {}) {
     if (state.generating) return;
     intro.hidden = true;
+    state.editing = false;
 
     // без активного чата создаём его на лету — id сгенерирует сервер
     if (!state.activeId) {
@@ -1490,21 +1733,42 @@
     state.generatingChatId = chatId;
 
     const body = { session: chatId, stream: true };
-    if (modelSel.value) body.model = modelSel.value;
-    if (regenerate) {
+    if (!modelInput.disabled && modelInput.value) body.model = modelInput.value;
+    if (regenerate || edit) {
       body.regenerate = true;
-      // визуально убираем последний ответ — сервер сам вырежет последнюю пару из истории
-      while (feed.lastElementChild &&
-             !(feed.lastElementChild.classList.contains("msg") &&
-               feed.lastElementChild.classList.contains("user"))) {
-        feed.lastElementChild.remove();
+      if (edit) {
+        // правка: сервер ЗАМЕНЯЕТ текст последнего user-сообщения
+        // (regenerate + непустой message) — убираем из ленты и истории
+        // всё, начиная с самого user-бабла
+        body.message = message;
+        feed.querySelectorAll('[data-act="edit"]').forEach(b => b.remove());
+        while (feed.lastElementChild && !(feed.lastElementChild.classList.contains("msg")
+               && feed.lastElementChild.classList.contains("user"))) {
+          feed.lastElementChild.remove();
+        }
+        feed.lastElementChild?.remove();
+        const lastUser = state.history.map(m => m.role).lastIndexOf("user");
+        state.history = state.history.slice(0, lastUser);
+        feed.querySelectorAll('[data-act="edit"]').forEach(b => b.remove());
+        userBubble(message, state.history.length, true);
+        state.history.push({ role: "user", content: message });
+      } else {
+        // визуально убираем последний ответ — сервер сам вырежет последнюю пару из истории
+        while (feed.lastElementChild &&
+               !(feed.lastElementChild.classList.contains("msg") &&
+                 feed.lastElementChild.classList.contains("user"))) {
+          feed.lastElementChild.remove();
+        }
+        const lastUser = state.history.map(m => m.role).lastIndexOf("user");
+        state.history = state.history.slice(0, lastUser + 1);
       }
-      const lastUser = state.history.map(m => m.role).lastIndexOf("user");
-      state.history = state.history.slice(0, lastUser + 1);
       answerMetaByChat.delete(chatId);
     } else {
       body.message = message;
-      userBubble(message, state.history.length);
+      // кнопка «изменить» — ровно на последнем user-сообщении: уходит со
+      // старого, появляется на новом
+      feed.querySelectorAll('[data-act="edit"]').forEach(b => b.remove());
+      userBubble(message, state.history.length, true);
       state.history.push({ role: "user", content: message });
       // очистка композера сразу после отправки (как в прежнем ask()): без
       // неё текст остаётся и повторный Enter уходит дубликатом
@@ -1517,10 +1781,25 @@
     let renderTimer = null, settled = false;
     const stillHere = () => state.activeId === chatId;
 
+    const ensureStreamMsg = () => {
+      // P1 проверки webui: после ухода из чата и возврата openChat()
+      // отсоединяет старую баблу через feed.innerHTML="" — стрим должен
+      // пересоздать узел, а не писать в мёртвый (ответ «исчезал» до
+      // перезагрузки страницы)
+      if (!streamMsg || !streamMsg.isConnected) {
+        streamMsg = document.createElement("div");
+        streamMsg.className = "msg bot";
+        streamMsg.innerHTML = '<span class="who">агент</span><div class="bubble md streaming"></div>';
+        feed.appendChild(streamMsg);
+      }
+      return streamMsg;
+    };
+
     const renderStream = () => {
-      if (!stillHere() || !streamMsg) return;
-      streamMsg.querySelector(".bubble").innerHTML = mdRender(raw);
+      if (!stillHere() || !raw) return;
+      ensureStreamMsg().querySelector(".bubble").innerHTML = mdRender(raw);
       scrollIfStick();
+      updateJumpDown();
     };
     const scheduleRender = () => {
       // дебаунс рендера, чтобы дельты не перестраивали markdown на каждый чанк
@@ -1528,11 +1807,18 @@
     };
 
     const ensureTools = () => {
-      if (toolsWrap) return toolsWrap;
+      // P1-1: после возврата в чат обёртка тулов тоже отсоединена
+      // (feed.innerHTML="") — пересоздаём, а не вставляем в мёртвый узел
+      if (toolsWrap && toolsWrap.isConnected) return toolsWrap;
       toolsWrap = document.createElement("div");
       toolsWrap.className = "tools";
-      if (streamMsg) streamMsg.parentElement.insertBefore(toolsWrap, streamMsg);
-      else feed.appendChild(toolsWrap);
+      if (stillHere()) {
+        const anchor = ensureStreamMsg();
+        if (anchor.parentElement === feed) feed.insertBefore(toolsWrap, anchor);
+        else feed.appendChild(toolsWrap);
+      } else {
+        feed.appendChild(toolsWrap);
+      }
       return toolsWrap;
     };
     const ensureTele = wrap => {
@@ -1560,7 +1846,7 @@
       if (settled) return;
       settled = true;
       if (!stillHere()) return;
-      if (streamMsg) {
+      if (streamMsg && streamMsg.isConnected) {
         const b = streamMsg.querySelector(".bubble");
         b.classList.remove("streaming", "md");
         b.classList.add("err");
@@ -1581,17 +1867,23 @@
       if (ev.model) answerMetaByChat.set(chatId, am);
       const add = (ev.usage?.prompt_tokens || 0) + (ev.usage?.completion_tokens || 0);
       if (add) tokensByChat.set(chatId, (tokensByChat.get(chatId) || 0) + add);
-      if (!stillHere()) { loadSessions(); return; }
-      const b = streamMsg?.querySelector(".bubble");
-      if (b) {
-        b.classList.remove("streaming");
-        if (answer) b.innerHTML = mdRender(answer);
-        else if (ev.stopped) b.textContent = "⏹ генерация остановлена — текст не успел накопиться";
-        else b.textContent = "(пустой ответ)";
-        rawTexts.set(streamMsg, answer);
-        if (answer) attachAnswerActions(streamMsg);
+      if (!stillHere()) {
+        // генерация завершилась в неактивном чате: маркер «есть новый ответ»
+        // в сайдбаре + актуализация баннера
+        if (ev.model) unreadChats.add(chatId);
+        loadSessions();
+        updateGenBanner();
+        return;
       }
-      if (ev.model && streamMsg) appendMetaLine(streamMsg, am);
+      const el = ensureStreamMsg();
+      const b = el.querySelector(".bubble");
+      b.classList.remove("streaming");
+      if (answer) b.innerHTML = mdRender(answer);
+      else if (ev.stopped) b.textContent = "⏹ генерация остановлена — текст не успел накопиться";
+      else b.textContent = "(пустой ответ)";
+      rawTexts.set(el, answer);
+      if (answer) attachAnswerActions(el);
+      if (ev.model) appendMetaLine(el, am);
       if (add) renderTokens();
       if (ev.title && state.activeMeta) {
         state.activeMeta.title = ev.title;
@@ -1632,14 +1924,10 @@
       else if (event === "delta") {
         raw += ev.text || "";
         document.getElementById("typing")?.remove();
-        if (!streamMsg && stillHere()) {
-          streamMsg = document.createElement("div");
-          streamMsg.className = "msg bot";
-          streamMsg.innerHTML = '<span class="who">агент</span><div class="bubble md streaming"></div>';
-          feed.appendChild(streamMsg);
-        }
+        if (stillHere()) ensureStreamMsg();
         scheduleRender();
       }
+      else if (event === "ping") { /* keepalive: соединение и генерация живы */ }
       else if (event === "done") finish(ev);
       else if (event === "error") fail("⚠ " + (ev.error || "ошибка генерации"));
     };
@@ -1699,9 +1987,27 @@
   // ---------- горячие клавиши ----------
   document.addEventListener("keydown", e => {
     const k = e.key.toLowerCase();
+    // фокус-трап модала: Tab не уводит фокус за пределы диалога
+    if (e.key === "Tab" && !modalBackdrop.hidden) {
+      const focusables = [...modalBackdrop
+          .querySelectorAll("button, input, textarea")]
+          .filter(el => !el.disabled && el.offsetParent !== null);
+      if (focusables.length) {
+        const first = focusables[0], last = focusables[focusables.length - 1];
+        if (!modalBackdrop.contains(document.activeElement)) {
+          e.preventDefault(); first.focus();
+        } else if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault(); last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault(); first.focus();
+        }
+      }
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && k === "n") {
       e.preventDefault();
       if (!state.generating) newChat();
+      else toast("дождитесь завершения генерации");
     } else if ((e.ctrlKey || e.metaKey) && k === "k") {
       e.preventDefault();
       if (isMobile()) { sidebar.classList.add("open"); overlay.classList.add("show"); }
@@ -1709,10 +2015,19 @@
       searchInput.focus(); searchInput.select();
     } else if (e.key === "Escape") {
       if (!modalBackdrop.hidden) closeSettings();
+      else if (!modelMenu.hidden) { closeModelMenu(); input.focus(); }
+      else if (state.editing) { state.editing = false; toast("правка отменена — Enter отправит текст новым сообщением"); }
       else if (state.generating) stopGen();
       else if (sidebar.classList.contains("open")) closeSidebar();
     }
   });
+
+  jumpDown.onclick = () => {
+    stick = true;
+    scrollIfStick(true);
+    jumpDown.hidden = true;
+  };
+  genBannerStop.onclick = stopGen;
 
   // ---------- поиск с дебаунсом ----------
   let searchTimer = null;
