@@ -105,7 +105,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 supportingText = {
                     Text(
                         if (invalid) "Неверный адрес"
-                        else "Эмулятор: 10.0.2.2:8081 · Телефон: <IP компьютера>:8081",
+                        else "Эмулятор: 10.0.2.2:8080 · Телефон: <IP компьютера>:8080",
                         color = if (invalid) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )

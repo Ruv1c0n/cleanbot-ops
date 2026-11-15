@@ -65,7 +65,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `save strips scheme persists and reconnects on changed address`() = runTest {
+    fun `save strips scheme and persists on changed address`() = runTest {
         ServerConfig.hostPort.value = "10.0.2.2:8080"
         val viewModel = vm()
 

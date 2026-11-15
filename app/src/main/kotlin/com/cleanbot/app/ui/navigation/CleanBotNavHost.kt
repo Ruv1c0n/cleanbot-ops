@@ -2,6 +2,7 @@ package com.cleanbot.app.ui.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -24,9 +25,13 @@ fun CleanBotNavHost(
     }
     // Онбординг — стартовый экран только до первого завершения (AppContainer.init
     // уже прочитал флаг в CleanBotApp.onCreate, до первой композиции).
+    // remember: замораживаем значение на жизнь composition — пересчёт при
+    // рекомпозиции сменил бы ключ startDestination, навигация пересобрала бы
+    // граф и вытолкнула весь бэкстек посреди сессии (navigation-compose 2.7.7).
+    val startDestination = remember { if (AppContainer.onboardingDone) "fleet" else "onboarding" }
     NavHost(
         navController = navController,
-        startDestination = if (AppContainer.onboardingDone) "fleet" else "onboarding"
+        startDestination = startDestination
     ) {
         composable("onboarding") {
             OnboardingScreen(onDone = {

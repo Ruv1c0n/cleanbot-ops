@@ -15,6 +15,7 @@ import com.cleanbot.app.data.model.Session
 import com.cleanbot.app.data.model.Telemetry
 import com.cleanbot.app.data.remote.RobotApi
 import com.cleanbot.app.data.remote.TelemetrySocket
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -102,13 +103,23 @@ class RobotRepository(
     fun startTelemetryLoop(scope: CoroutineScope) {
         scope.launch {
             combine(ServerConfig.hostPort, reconnectTick) { host, _ -> host }.collectLatest {
+                // Липкий CONNECTING: спиннер один раз на новый connect-цикл (холодный
+                // старт или явное переподключение тиком ниже). Повторные попытки внутри
+                // while НЕ переиздают CONNECTING — пока сервер недоступен, публикуется
+                // DISCONNECTED (офлайн-стейт), иначе экраны мерцают спиннер↔оффлайн.
+                _connectionState.value = ConnectionState.CONNECTING
                 while (isActive) {
-                    _connectionState.value = ConnectionState.CONNECTING
-                    runCatching {
+                    val result = runCatching {
                         socket.stream().collect { batch ->
                             _connectionState.value = ConnectionState.CONNECTED
                             applyTelemetry(batch)
                         }
+                    }
+                    // collectLatest отменяется тиком переподключения/сменой адреса:
+                    // CancellationException нельзя глотать — иначе ложный DISCONNECTED
+                    // и затянутая отмена; пробрасываем дальше.
+                    if (result.isFailure && result.exceptionOrNull() is CancellationException) {
+                        throw result.exceptionOrNull()!!
                     }
                     _connectionState.value = ConnectionState.DISCONNECTED
                     delay(2000)
