@@ -3,7 +3,10 @@
 stdlib-сервер: python webui.py [--port 8765] — браузер на http://localhost:8765.
 Страница agent/webui.html. API:
 - GET  /api/info — активная модель + fallback (расширенный);
-- GET  /api/models — список моделей обоих бэкендов (дедуп по id);
+- GET  /api/models — список моделей обоих бэкендов (дедуп по id) +
+  provider_groups — модели провайдеров пользователя (по API-ключам);
+- GET/POST /api/providers, DELETE /api/providers/<name> — управление
+  провайдерами (providers.json, ключи наружу не выходят — только маска);
 - GET  /api/sessions?q= — список чатов (pinned первыми, updated_at desc);
 - GET/POST /api/sessions, GET/PATCH/DELETE /api/sessions/<id>,
   POST /api/sessions/<id>/fork — управление чатами; метаданные — sidecar
@@ -33,6 +36,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import agent
 import context
+import providers
 import rag
 
 HTML_FILE = Path(__file__).parent / "webui.html"
@@ -41,6 +45,8 @@ SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # id попадает в путь файла сессии
 SESSION_PATH = re.compile(r"^/api/sessions/([^/]+)$")
 FORK_PATH = re.compile(r"^/api/sessions/([^/]+)/fork$")
+# имя провайдера в маршруте проверяется формой validate (без «/», <=64)
+PROVIDER_PATH = re.compile(r"^/api/providers/([^/]+)$")
 backend_ready = False
 
 backend_lock = threading.Lock()          # select_backend один раз на процесс
@@ -213,6 +219,63 @@ def merge_models(local_ids, online_ids, active_model=None,
             backend = "local"
         out.append({"id": mid, "backend": backend})
     return out
+
+
+# ---------- провайдеры моделей по API-ключу ----------
+
+def providers_public() -> list:
+    """Список провайдеров для GET /api/providers: без ключей, только маска."""
+    return [providers.public_view(p) for p in providers.load_providers()]
+
+
+def provider_model_groups(base_ids: list) -> list:
+    """Группы моделей включённых провайдеров для /api/models: [{name,
+    models}]. id, совпавшие с local/online, отфильтрованы — коллизия
+    решается в пользу дефолтных бэкендов, как в merge_models; дубль между
+    самими провайдерами достаётся первому. Эмбеддинг-модель фильтруется
+    как и у остальных бэкендов."""
+    known = set(base_ids)
+    groups = []
+    for cfg in providers.enabled_backends():
+        ids = [m for m in agent._backend_model_ids(cfg)
+               if not _is_embed_model(m) and m not in known]
+        if ids:
+            groups.append({"name": cfg["name"], "models": ids})
+            known |= set(ids)
+    return groups
+
+
+def provider_create(payload) -> tuple[int, dict]:
+    """POST /api/providers: валидация, дубликат name -> 400, запись и
+    сброс TTL-кэша моделей — иначе новый провайдер 30с невидим в списке
+    моделей (негативные результаты кэшем не задеты, а позитивные висят)."""
+    entry = providers.validate_provider(payload)
+    if isinstance(entry, str):
+        return 400, {"error": entry}
+    with providers.LOCK:
+        items = providers.load_providers()
+        if any(p["name"] == entry["name"] for p in items):
+            return 400, {"error": f"провайдер {entry['name']!r} уже существует"}
+        items.append(entry)
+        providers.save_providers(items)
+    agent._model_ids_cache.clear()
+    return 200, providers.public_view(entry)
+
+
+def provider_delete(name) -> tuple[int, dict]:
+    """DELETE /api/providers/<name>; не найден -> 404. Кэш моделей тоже
+    сбрасывается: модели удалённого провайдера не должны висеть призраком
+    30 секунд после удаления."""
+    if not isinstance(name, str) or not name:
+        return 400, {"error": "некорректное имя провайдера"}
+    with providers.LOCK:
+        items = providers.load_providers()
+        kept = [p for p in items if p["name"] != name]
+        if len(kept) == len(items):
+            return 404, {"error": "провайдер не найден"}
+        providers.save_providers(kept)
+    agent._model_ids_cache.clear()
+    return 200, {"ok": True}
 
 
 # ---------- сессии: файлы, meta, список, fork ----------
@@ -644,7 +707,8 @@ def chat_stream_events(session_id: str, message: str, model_id=None,
             except ChatError as e:
                 q.put(("error", {"error": str(e)}))
             except Exception as e:               # noqa: BLE001 — ошибка уходит клиенту кадром
-                q.put(("error", {"error": str(e)}))
+                # ключи маскируются: исключение бэкенда может содержать ключ
+                q.put(("error", {"error": providers.redact(e)}))
             finally:
                 q.put(None)                      # sentinel конца потока
                 # свой Event убираем и здесь: если генератор закрыли ДО
@@ -722,6 +786,8 @@ class Handler(BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         if path == "/":
             self._send(200, HTML_FILE.read_bytes(), "text/html; charset=utf-8")
+        # остальные GET без обработчика — тоже 404-JSON: _send ждёт bytes,
+        # текстовые 404 роняли обработчик TypeError-ом (favicon.ico и т.п.)
         elif path == "/api/info":
             try:
                 _ensure_backend()
@@ -735,7 +801,7 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 self._json(200, info)
             except Exception as e:
-                self._json(500, {"error": str(e)})
+                self._json(500, {"error": providers.redact(e)})
         elif path == "/api/models":
             try:
                 _ensure_backend()
@@ -744,15 +810,21 @@ class Handler(BaseHTTPRequestHandler):
                                  if not _is_embed_model(m)]
                     online_ids = [m for m in agent.online_model_ids()
                                   if not _is_embed_model(m)]
+                    # группы провайдеров под тем же локом: сетевые опросы
+                    # бэкендов сериализуются, как и для local/online
+                    groups = provider_model_groups(local_ids + online_ids)
                 active_backend = "local" if agent.active is agent.LOCAL \
                     else "online"
                 self._json(200, {
                     "models": merge_models(local_ids, online_ids,
                                            agent.active["model"],
                                            active_backend),
+                    "provider_groups": groups,
                     "active": agent.active["model"]})
             except Exception as e:
-                self._json(500, {"error": str(e)})
+                self._json(500, {"error": providers.redact(e)})
+        elif path == "/api/providers":
+            self._json(200, {"providers": providers_public()})
         elif path == "/api/sessions":
             q = (parse_qs(query).get("q") or [""])[0]
             self._json(200, {"sessions": list_sessions(q)})
@@ -760,7 +832,9 @@ class Handler(BaseHTTPRequestHandler):
             code, body = session_detail(unquote(SESSION_PATH.match(path).group(1)))
             self._json(code, body)
         else:
-            self._send(404, "не найдено", "text/plain; charset=utf-8")
+            # _send ждёт bytes: текстовый 404 (favicon.ico и т.п.) ронял
+            # обработчик TypeError-ом вместо кода
+            self._json(404, {"error": "не найдено"})
 
     def do_POST(self):
         if self._deny_foreign():
@@ -775,19 +849,21 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_chat(payload)
         elif path == "/api/sessions":
             self._handle_create_session(payload)
+        elif path == "/api/providers":
+            self._handle_provider_create(payload)
         elif FORK_PATH.match(path):
             self._handle_fork(unquote(FORK_PATH.match(path).group(1)), payload)
         elif path == "/api/stop":
             self._handle_stop(payload)
         else:
-            self._send(404, "не найдено", "text/plain; charset=utf-8")
+            self._json(404, {"error": "не найдено"})
 
     def do_PATCH(self):
         if self._deny_foreign():
             return
         match = SESSION_PATH.match(urlsplit(self.path).path)
         if not match:
-            self._send(404, "не найдено", "text/plain; charset=utf-8")
+            self._json(404, {"error": "не найдено"})
             return
         session_id = unquote(match.group(1))
         try:
@@ -815,11 +891,16 @@ class Handler(BaseHTTPRequestHandler):
         if self._deny_foreign():
             return
         match = SESSION_PATH.match(urlsplit(self.path).path)
-        if not match:
-            self._send(404, "не найдено", "text/plain; charset=utf-8")
+        if match:
+            code, body = delete_session(unquote(match.group(1)))
+            self._json(code, body)
             return
-        code, body = delete_session(unquote(match.group(1)))
-        self._json(code, body)
+        match = PROVIDER_PATH.match(urlsplit(self.path).path)
+        if match:
+            code, body = provider_delete(unquote(match.group(1)))
+            self._json(code, body)
+            return
+        self._json(404, {"error": "не найдено"})
 
     def _handle_chat(self, payload) -> None:
         parsed = parse_chat_request(payload)
@@ -836,7 +917,9 @@ class Handler(BaseHTTPRequestHandler):
         except ChatError as e:
             self._json(400, {"error": str(e)})
         except Exception as e:
-            self._json(500, {"error": str(e)})
+            # текст исключения наружу маскируется: openai может вложить
+            # API-ключ в сообщение ошибки (providers.redact)
+            self._json(500, {"error": providers.redact(e)})
 
     def _stream_chat(self, parsed) -> None:
         """SSE-ответ. protocol HTTP/1.0 без Content-Length: конец потока =
@@ -857,12 +940,17 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass             # клиент закрыл вкладку — не ронять поток
         except Exception as e:
-            # заголовки уже ушли: ошибка только кадром error (если можно)
+            # заголовки уже ушли: ошибка только кадром error (если можно);
+            # текст маскируется — ключ провайдера в исключении наружу не идёт
             try:
-                self.wfile.write(sse_frame("error", {"error": str(e)}))
+                self.wfile.write(sse_frame("error", {"error": providers.redact(e)}))
                 self.wfile.flush()
             except OSError:
                 pass
+
+    def _handle_provider_create(self, payload) -> None:
+        code, body = provider_create(payload)
+        self._json(code, body)
 
     def _handle_create_session(self, payload) -> None:
         raw = normalize_create_payload(payload).get("id")

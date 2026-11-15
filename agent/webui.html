@@ -230,6 +230,50 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .mm-opt:hover, .mm-opt.sel { background: var(--glass-2); color: var(--brass-hi); }
+  /* провайдеры: блок под списком моделей в том же меню */
+  #model-list { flex: 1 1 auto; min-height: 0; }
+  .mm-providers {
+    flex: none; border-top: 1px solid var(--line);
+    padding: 8px 12px 10px; overflow-y: auto; max-height: 200px;
+  }
+  .mm-prov-row {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink);
+    padding: 4px 0;
+  }
+  .mm-prov-row .mask { color: var(--faint); margin-left: auto; font-size: 10px; }
+  .mm-prov-row .del {
+    font-family: var(--mono); font-size: 10px; color: var(--dim);
+    background: transparent; border: 1px solid var(--line);
+    border-radius: 7px; padding: 1px 7px; cursor: pointer;
+  }
+  .mm-prov-row .del:hover { color: var(--amber); border-color: var(--brass-line); }
+  .mm-add {
+    width: 100%; margin-top: 6px; font-family: var(--mono); font-size: 10.5px;
+    color: var(--brass-hi); background: var(--glass-2);
+    border: 1px solid var(--brass-line); border-radius: 8px;
+    padding: 6px 0; cursor: pointer; letter-spacing: .05em;
+  }
+  .mm-add:hover { color: var(--ink); }
+  .mm-prov-form { display: none; flex-direction: column; gap: 6px; padding-top: 8px; }
+  .mm-prov-form.open { display: flex; }
+  .mm-prov-form input {
+    font-family: var(--mono); font-size: 11px; color: var(--ink);
+    background: var(--well); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 9px; outline: none; width: 100%;
+  }
+  .mm-prov-form input:focus { border-color: var(--brass-line); }
+  .mm-prov-actions { display: flex; gap: 8px; }
+  .mm-prov-actions button {
+    flex: 1; font-family: var(--mono); font-size: 10.5px;
+    border-radius: 8px; padding: 6px 0; cursor: pointer;
+  }
+  .mm-prov-actions .save {
+    color: var(--ink); background: var(--brass); border: 1px solid var(--brass);
+  }
+  .mm-prov-actions .cancel {
+    color: var(--dim); background: transparent; border: 1px solid var(--line);
+  }
 
   /* ---------- служебные элементы: баннер генерации, к низу, тост ---------- */
   #gen-banner {
@@ -778,6 +822,20 @@
     <div class="model-menu" id="model-menu" hidden>
       <input id="model-filter" type="search" placeholder="фильтр моделей…" aria-label="фильтр моделей" spellcheck="false">
       <div id="model-list" role="listbox" aria-label="доступные модели"></div>
+      <div class="mm-providers" id="providers-block">
+        <div id="providers-list"></div>
+        <button class="mm-add" id="provider-add" type="button">+ добавить провайдера</button>
+        <form class="mm-prov-form" id="provider-form" autocomplete="off">
+          <input id="provider-name" placeholder="имя (например, OpenRouter)" maxlength="64" spellcheck="false">
+          <input id="provider-url" placeholder="base_url, например https://api.example.com/v1" spellcheck="false">
+          <input id="provider-key" type="password" placeholder="API-ключ" autocomplete="new-password">
+          <input id="provider-key2" type="password" placeholder="повторите ключ" autocomplete="new-password">
+          <div class="mm-prov-actions">
+            <button type="submit" class="save">сохранить</button>
+            <button type="button" class="cancel" id="provider-cancel">отмена</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
   <span class="chip title-chip" id="chat-title" hidden></span>
@@ -1455,24 +1513,37 @@
   // ---------- селектор моделей: инпут + фильтруемое меню ----------
   // заменяет нативный select: ~430 онлайн-моделей без поиска были unusable
   let modelsCache = [];
+  let provGroupsCache = [];      // группы моделей провайдеров [{name, models}]
+  let modelsLoadedOnce = false;  // первый сбой — старт без бэкенда, не шумим
 
   async function loadModels() {
     try {
       const d = await api("/api/models");
       modelsCache = d.models || [];
+      provGroupsCache = d.provider_groups || [];
+      modelsLoadedOnce = true;
       modelChip.dataset.state = "on";
       modelInput.disabled = false;
       modelInput.readOnly = false;
-      if (!modelsCache.length) {
+      if (!modelsCache.length && !provGroupsCache.length) {
         modelInput.value = d.active || "нет моделей";
         modelInput.readOnly = true;
       }
       if (!state.pendingModel) state.pendingModel = d.active || null;
       setModelSelect(state.pendingModel);
-    } catch {
+      // список провайдеров меняется без переоткрытия меню (добавили/удалили
+      // провайдера, кэш моделей истёк) — открытый список перерисовываем
+      if (!modelMenu.hidden) renderModelMenu(modelFilter.value);
+    } catch (e) {
       modelChip.dataset.state = "off";
       modelInput.disabled = true;
       modelInput.value = "сервер недоступен";
+      // тихий сбой ПОСЛЕ успешной загрузки выглядел как «список просто не
+      // обновился»: открытый список оставался старым, добавленный провайдер
+      // «не появлялся». Первый сбой (старт без бэкенда) — штатный режим
+      if (modelsLoadedOnce) {
+        toast("⚠ модели не обновились: " + (e.message || "сервер недоступен"));
+      }
     }
   }
 
@@ -1489,21 +1560,22 @@
     const term = (q || "").trim().toLowerCase();
     const groups = { local: "локальные", online: "онлайн" };
     let shown = 0;
-    for (const be of ["local", "online"]) {
-      const list = modelsCache.filter(m => m.backend === be
-          && (!term || m.id.toLowerCase().includes(term)));
-      if (!list.length) continue;
+    // один cap на источник: DOM на сотни нод тормозит
+    const cap = 200;
+    const renderGroup = (title, list) => {
+      if (!list.length) return;
       const head = document.createElement("div");
       head.className = "mm-group";
-      head.textContent = groups[be];
+      head.textContent = title;
       modelList.appendChild(head);
-      const cap = 200;                        // рендерим порциями: DOM на 430 нод тормозит
       for (const m of list.slice(0, cap)) {
+        // модели провайдеров приходят строками, local/online — объектами {id, backend}
+        const id = typeof m === "string" ? m : m.id;
         const opt = document.createElement("div");
-        opt.className = "mm-opt" + (m.id === modelInput.value ? " sel" : "");
+        opt.className = "mm-opt" + (id === modelInput.value ? " sel" : "");
         opt.setAttribute("role", "option");
-        opt.textContent = m.id;
-        opt.onclick = () => selectModel(m.id);
+        opt.textContent = id;
+        opt.onclick = () => selectModel(id);
         modelList.appendChild(opt);
         shown++;
       }
@@ -1513,6 +1585,15 @@
         more.textContent = "… уточните фильтр (" + (list.length - cap) + " скрыто)";
         modelList.appendChild(more);
       }
+    };
+    for (const be of ["local", "online"]) {
+      renderGroup(groups[be], modelsCache.filter(m => m.backend === be
+          && (!term || m.id.toLowerCase().includes(term))));
+    }
+    // модели провайдеров: отдельная группа на каждого провайдера
+    for (const g of provGroupsCache) {
+      renderGroup(g.name, (g.models || []).filter(id =>
+          !term || id.toLowerCase().includes(term)));
     }
     if (!shown) {
       const d = document.createElement("div");
@@ -1571,6 +1652,89 @@
       const first = modelList.querySelector(".mm-opt");
       if (first) first.click();
     }
+  });
+
+  // ---------- провайдеры моделей (API-ключи) ----------
+  // CRUD через сервер — единый источник правды; ключ наружу не выходит,
+  // сервер отдаёт только маску (key_mask). Ключ в форме дважды: пара
+  // password-полей вместо «показать» — опечатка ключа не узнаётся по факту
+  // первого же запроса модели.
+  let providersCache = [];
+
+  async function loadProviders() {
+    try {
+      const d = await api("/api/providers");
+      providersCache = d.providers || [];
+    } catch {
+      providersCache = [];
+    }
+    renderProvidersBlock();
+  }
+
+  function renderProvidersBlock() {
+    const list = $("providers-list");
+    list.innerHTML = "";
+    for (const p of providersCache) {
+      const row = document.createElement("div");
+      row.className = "mm-prov-row";
+      const nm = document.createElement("span");
+      nm.textContent = p.name + (p.enabled ? "" : " (выкл)");
+      nm.title = p.base_url;
+      const mask = document.createElement("span");
+      mask.className = "mask";
+      mask.textContent = p.key_mask;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "del";
+      del.textContent = "×";
+      del.setAttribute("aria-label", "удалить провайдера " + p.name);
+      del.onclick = () => deleteProvider(p.name);
+      row.append(nm, mask, del);
+      list.appendChild(row);
+    }
+  }
+
+  async function deleteProvider(name) {
+    if (!confirm("удалить провайдера «" + name + "»? Его модели исчезнут из списка.")) return;
+    try {
+      await api("/api/providers/" + encodeURIComponent(name), { method: "DELETE" });
+      toast("провайдер удалён");
+      await Promise.all([loadModels(), loadProviders()]);
+    } catch (e) { toast("⚠ не удалось удалить: " + e.message); }
+  }
+
+  $("provider-add").addEventListener("click", () => {
+    const form = $("provider-form");
+    form.classList.toggle("open");
+    if (form.classList.contains("open")) $("provider-name").focus();
+  });
+  $("provider-cancel").addEventListener("click", () => {
+    const form = $("provider-form");
+    form.classList.remove("open");
+    form.reset();
+  });
+  $("provider-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const name = $("provider-name").value.trim();
+    const base_url = $("provider-url").value.trim();
+    const api_key = $("provider-key").value;
+    if ($("provider-key2").value !== api_key) {
+      toast("⚠ ключи не совпадают");
+      return;
+    }
+    try {
+      await api("/api/providers", {
+        method: "POST",
+        body: JSON.stringify({ name, base_url, api_key })
+      });
+      toast("провайдер добавлен — модели появятся в списке");
+      const form = $("provider-form");
+      form.classList.remove("open");
+      form.reset();
+      // новый провайдер должен быть виден сразу: и список его моделей,
+      // и сам провайдер в блоке снизу
+      await Promise.all([loadModels(), loadProviders()]);
+    } catch (err) { toast("⚠ не удалось добавить: " + err.message); }
   });
 
   // ---------- экспорт чата в markdown ----------
@@ -2065,6 +2229,7 @@
   // ---------- старт ----------
   async function init() {
     loadModels();
+    loadProviders();
     await loadSessions();
     // восстанавливаем активный чат; если его удалили на сервере — стартуем с пустого состояния
     const stored = localStorage.getItem("cb_active");
